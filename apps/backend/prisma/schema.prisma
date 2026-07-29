@@ -1,0 +1,34 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// 평가 프로젝트/실행 단위
+model EvalRun {
+  id          String       @id @default(uuid())
+  name        String
+  status      String       @default("PENDING") // PENDING, RUNNING, COMPLETED, FAILED
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  results     EvalResult[]
+}
+
+// 개별 레코드 평가 결과
+model EvalResult {
+  id           String   @id @default(uuid())
+  evalRunId    String
+  evalRun      EvalRun  @relation(fields: [evalRunId], references: [id], onDelete: Cascade)
+  inputPrompt  String
+  outputAnswer String
+  score        Float    // 0.0 ~ 1.0 점수
+  reason       String?  // 평가 이유
+  createdAt    DateTime @default(now())
+}
