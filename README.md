@@ -2,6 +2,7 @@
 
 > **AI 에이전트의 답변을 프로젝트별 정책과 테스트 시나리오에 따라 생성·검증·평가하고, 그 판단 근거와 실행 이력을 관리하는 로컬 AI 품질 평가 플랫폼**
 
+
 ## 프로젝트를 만든 이유
 
 AI 에이전트를 개발할 때 좋은 답변 몇 개를 눈으로 확인하는 것만으로는 품질을 보장하기 어렵다. 같은 모델이라도 프롬프트, 업무 문맥과 질문 유형에 따라 결과가 달라지며, “좋은 답변”의 기준도 서비스마다 다르다.
@@ -75,7 +76,10 @@ Ollama 기반 로컬 모델을 사용해 별도 클라우드 API 키 없이 개�
 
 ### 프로젝트 관리
 
-평가 대상 서비스의 이름, 업무 도메인, 설명과 비즈니스 문맥을 등록한다. 프로젝트 문맥은 AI가 현실적인 테스트 시나리오를 생성할 때 사용한다.
+> 평가 대상 서비스의 이름, 업무 도메인, 설명과 비즈니스 문맥을 등록한다. 프로젝트 문맥은 AI가 현실적인 테스트 시나리오를 생성할 때 사용한다.
+
+<img width="1495" height="719" alt="image" src="https://github.com/user-attachments/assets/da6657c1-ccf1-4ac2-a2cc-98dd01d26a53" />
+
 
 ### 평가 정책 관리
 
@@ -89,9 +93,12 @@ Ollama 기반 로컬 모델을 사용해 별도 클라우드 API 키 없이 개�
 
 가중치 합은 Backend에서 검증해 잘못된 점수 계산을 방지한다.
 
+
 ### AI 테스트 시나리오 생성
 
-프로젝트와 평가 정책을 기반으로 정상, 경계와 실패 상황을 포함한 시나리오를 생성한다.
+> 프로젝트와 평가 정책을 기반으로 정상, 경계와 실패 상황을 포함한 시나리오를 생성한다.
+
+<img width="1505" height="735" alt="image" src="https://github.com/user-attachments/assets/5e6707c7-b2e8-48ff-9506-286009f98c4f" />
 
 각 시나리오에는 다음 정보가 포함될 수 있다.
 
@@ -105,9 +112,15 @@ Ollama 기반 로컬 모델을 사용해 별도 클라우드 API 키 없이 개�
 
 ### 시나리오 자동 검증과 승인
 
-별도의 AI Validator가 생성된 시나리오의 도메인 관련성, 명확성, 현실성과 평가 가능성을 확인한다.
+> 별도의 AI Validator가 생성된 시나리오의 도메인 관련성, 명확성, 현실성과 평가 가능성을 확인한다.
+
+<img width="1167" height="720" alt="image" src="https://github.com/user-attachments/assets/af69305f-f704-4967-8d03-a268a060413a" />
+
 
 자동 검증을 통과해도 바로 실행하지 않는다. 담당자가 내용을 확인하고 `APPROVED`한 시나리오만 평가에 사용할 수 있다. 승인 후 내용을 수정하면 다시 `DRAFT` 상태로 전환된다.
+
+<img width="1505" height="735" alt="image" src="https://github.com/user-attachments/assets/468f4a76-de72-478f-8ad3-7fd292416ae7" />
+
 
 ### 다중 에이전트 평가
 
@@ -128,6 +141,9 @@ flowchart LR
 - **Supervisor**: 검증과 평가 결과의 일관성을 확인하고 PASS, FAIL 또는 RETRY를 결정한다.
 
 ### 평가 결과와 통계
+
+<img width="1498" height="724" alt="image" src="https://github.com/user-attachments/assets/b32a027b-f336-4f11-9676-a532b699f9b7" />
+
 
 Dashboard에서 다음 정보를 확인할 수 있다.
 
