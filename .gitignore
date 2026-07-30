@@ -1,5 +1,12 @@
 node_modules/
 .pnpm-store/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.tsbuildinfo
+apps/dashboard/vite.config.js
+apps/dashboard/vite.config.d.ts
 
 .env
 .env.*
