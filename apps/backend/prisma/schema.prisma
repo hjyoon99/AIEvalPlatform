@@ -11,24 +11,87 @@ datasource db {
   provider = "postgresql"
 }
 
+model Project {
+  id          String             @id @default(uuid())
+  name        String
+  domain      String
+  description String?
+  context     Json?
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+  policies    EvaluationPolicy[]
+  scenarios   Scenario[]
+  evalRuns    EvalRun[]
+}
+
+model EvaluationPolicy {
+  id            String    @id @default(uuid())
+  projectId     String
+  project       Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name          String
+  passThreshold Float     @default(0.7)
+  maxRetries    Int       @default(1)
+  metrics       Json
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  evalRuns      EvalRun[]
+}
+
+model Scenario {
+  id               String   @id @default(uuid())
+  projectId        String
+  project          Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title            String
+  category         String?
+  prompt           String
+  testOutput       String?
+  expectedOutput   String?
+  expectedBehavior Json?
+  evaluationRubric Json?
+  riskLevel        String   @default("MEDIUM")
+  status           String   @default("DRAFT")
+  autoValidation   Json?
+  rejectionReason  String?
+  reviewedAt       DateTime?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
 // 평가 프로젝트/실행 단위
 model EvalRun {
-  id          String       @id @default(uuid())
-  name        String
-  status      String       @default("PENDING") // PENDING, RUNNING, COMPLETED, FAILED
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
-  results     EvalResult[]
+  id            String       @id @default(uuid())
+  projectId     String?
+  project       Project?     @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  policyId      String?
+  policy        EvaluationPolicy? @relation(fields: [policyId], references: [id], onDelete: SetNull)
+  policySnapshot Json?
+  name          String
+  agentName     String
+  model         String
+  status        String       @default("PENDING")
+  passThreshold Float        @default(0.7)
+  maxRetries    Int          @default(1)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  completedAt   DateTime?
+  results       EvalResult[]
 }
 
 // 개별 레코드 평가 결과
 model EvalResult {
-  id           String   @id @default(uuid())
-  evalRunId    String
-  evalRun      EvalRun  @relation(fields: [evalRunId], references: [id], onDelete: Cascade)
-  inputPrompt  String
-  outputAnswer String
-  score        Float    // 0.0 ~ 1.0 점수
-  reason       String?  // 평가 이유
-  createdAt    DateTime @default(now())
+  id             String   @id @default(uuid())
+  evalRunId      String
+  evalRun        EvalRun  @relation(fields: [evalRunId], references: [id], onDelete: Cascade)
+  inputPrompt    String
+  outputAnswer   String
+  expectedOutput String?
+  score          Float
+  verdict        String
+  reason         String?
+  verification   Json?
+  evaluation     Json?
+  supervision    Json?
+  retryCount     Int      @default(0)
+  durationMs     Int?
+  createdAt      DateTime @default(now())
 }
