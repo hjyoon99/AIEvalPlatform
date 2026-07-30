@@ -240,9 +240,9 @@ AI가 생성한 시나리오를 자동 승인하지 않는다. 자동 검증은 
 
 ## 관련 문서
 
-- [전체 시스템 구조]()
-- [데이터 파이프라인 및 흐름]()
-- [AI 평가 엔진 설계]()
-- [API 명세서]()
-- [데이터베이스 ERD]()
-- [설치 및 실행 방법]()
+- [전체 시스템 구조](https://github.com/hjyoon99/AIEvalPlatform/wiki/System-Architecture)
+- [데이터 파이프라인 및 흐름](https://github.com/hjyoon99/AIEvalPlatform/wiki/Data-Pipeline)
+- [AI 평가 엔진 설계](https://github.com/hjyoon99/AIEvalPlatform/wiki/AI-Evaluation-Engine)
+- [API 명세서](https://github.com/hjyoon99/AIEvalPlatform/wiki/API-Reference)
+- [데이터베이스 ERD](https://github.com/hjyoon99/AIEvalPlatform/wiki/Database-Schema)
+- [설치 및 실행 방법](https://github.com/hjyoon99/AIEvalPlatform/wiki/Getting-Started)
