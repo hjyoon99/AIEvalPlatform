@@ -26,6 +26,14 @@
    - 실제 구현 및 검증 과정에서 드러난 문제
    - 원인 분석, 해결 방법, 재발 방지
 
+6. [SDK 실행 프로토콜](./SDK-Execution-Protocol.md)
+   - HTTP와 JSON을 포함하는 실행 계약
+   - SDK 인증, Job claim, lease, 완료와 실패 처리
+   - TypeScript SDK Worker 사용법
+7. [평가 어댑터 MVP 설계](./Evaluation-Adapter-MVP-Design.md)
+   - 기존 고객 AI를 수정하지 않는 별도 어댑터 구조
+   - `invoke()` 기반 고객 payload와 표준 결과 매핑
+   - 배포, 보안, 오류 처리와 MVP 완료 기준
 
 ## 문서의 사실 범위
 

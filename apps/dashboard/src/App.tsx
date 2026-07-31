@@ -132,6 +132,46 @@ type ScenarioRubric = {
   allowedVariations?: string[];
 };
 
+type AIApplication = {
+  id: string;
+  projectId: string;
+  name: string;
+  environment: string;
+  active: boolean;
+  createdAt: string;
+  _count: {
+    jobs: number;
+  };
+  jobs: {
+    status: string;
+    updatedAt: string;
+  }[];
+};
+
+type SdkJob = {
+  id: string;
+  applicationId: string;
+  testCase: {
+    id?: string;
+    prompt?: string;
+    variables?: Record<string, unknown>;
+  };
+  status: string;
+  attempt: number;
+  maxAttempts: number;
+  timeoutMs: number;
+  output?: {
+    text?: string;
+    metadata?: Record<string, unknown>;
+  };
+  error?: {
+    code?: string;
+    message?: string;
+  };
+  createdAt: string;
+  updatedAt: string;
+};
+
 const initialDataset: DatasetItem[] = [
   {
     prompt: '대한민국의 수도는 어디인가요?',
@@ -156,7 +196,7 @@ function formatDate(value: string) {
 
 function App() {
   const [activeView, setActiveView] = useState<
-    'runs' | 'scenarios' | 'policies'
+    'runs' | 'scenarios' | 'policies' | 'adapters'
   >('runs');
   const [runs, setRuns] = useState<EvalRun[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -324,6 +364,13 @@ function App() {
             onClick={() => setActiveView('policies')}
           >
             <span>⚙</span>
+          </button>
+          <button
+            className={`nav-item ${activeView === 'adapters' ? 'active' : ''}`}
+            aria-label="평가 어댑터"
+            onClick={() => setActiveView('adapters')}
+          >
+            <span>⇄</span>
           </button>
         </nav>
         <div className="sidebar-status" title="Ollama local">
@@ -638,6 +685,13 @@ function App() {
             onProjectsChanged={loadDashboard}
           />
         )}
+
+        {activeView === 'adapters' && (
+          <AdapterWorkspace
+            projects={projects}
+            onProjectsChanged={loadDashboard}
+          />
+        )}
       </main>
     </div>
   );
@@ -864,6 +918,433 @@ function ProjectCreator({
         </button>
       </div>
     </section>
+  );
+}
+
+function AdapterWorkspace({
+  projects,
+  onProjectsChanged,
+}: {
+  projects: Project[];
+  onProjectsChanged: () => Promise<void>;
+}) {
+  const [projectId, setProjectId] = useState(projects[0]?.id ?? '');
+  const [applications, setApplications] = useState<AIApplication[]>([]);
+  const [applicationId, setApplicationId] = useState('');
+  const [jobs, setJobs] = useState<SdkJob[]>([]);
+  const [applicationName, setApplicationName] = useState(
+    'customer-support-adapter',
+  );
+  const [environment, setEnvironment] = useState('development');
+  const [issuedSdkKey, setIssuedSdkKey] = useState('');
+  const [prompt, setPrompt] = useState('주문을 취소할 수 있나요?');
+  const [variablesJson, setVariablesJson] = useState('{}');
+  const [timeoutMs, setTimeoutMs] = useState(30_000);
+  const [busy, setBusy] = useState(false);
+  const [localError, setLocalError] = useState('');
+
+  useEffect(() => {
+    if (!projectId && projects[0]) {
+      setProjectId(projects[0].id);
+    }
+  }, [projectId, projects]);
+
+  const loadApplications = useCallback(async () => {
+    if (!projectId) {
+      setApplications([]);
+      setApplicationId('');
+      return;
+    }
+    const response = await fetch(
+      `${API_URL}/projects/${projectId}/applications`,
+    );
+    if (!response.ok) {
+      throw new Error('어댑터 목록을 불러오지 못했습니다.');
+    }
+    const nextApplications = (await response.json()) as AIApplication[];
+    setApplications(nextApplications);
+    setApplicationId((current) =>
+      nextApplications.some((application) => application.id === current)
+        ? current
+        : nextApplications[0]?.id ?? '',
+    );
+  }, [projectId]);
+
+  const loadJobs = useCallback(async () => {
+    if (!applicationId) {
+      setJobs([]);
+      return;
+    }
+    const response = await fetch(
+      `${API_URL}/applications/${applicationId}/jobs`,
+    );
+    if (!response.ok) {
+      throw new Error('Job 목록을 불러오지 못했습니다.');
+    }
+    setJobs((await response.json()) as SdkJob[]);
+  }, [applicationId]);
+
+  useEffect(() => {
+    void loadApplications().catch((loadError) => {
+      setLocalError(
+        loadError instanceof Error
+          ? loadError.message
+          : '어댑터 목록 조회에 실패했습니다.',
+      );
+    });
+  }, [loadApplications]);
+
+  useEffect(() => {
+    void loadJobs().catch((loadError) => {
+      setLocalError(
+        loadError instanceof Error
+          ? loadError.message
+          : 'Job 목록 조회에 실패했습니다.',
+      );
+    });
+    if (!applicationId) return;
+    const timer = window.setInterval(() => {
+      void loadJobs();
+    }, 2_000);
+    return () => window.clearInterval(timer);
+  }, [applicationId, loadJobs]);
+
+  if (projects.length === 0) {
+    return <ProjectCreator onCreated={onProjectsChanged} />;
+  }
+
+  const createApplication = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!projectId) return;
+    setBusy(true);
+    setLocalError('');
+    try {
+      const response = await fetch(
+        `${API_URL}/projects/${projectId}/applications`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: applicationName,
+            environment,
+          }),
+        },
+      );
+      const body = (await response.json()) as {
+        application?: AIApplication;
+        sdkKey?: string;
+        message?: string;
+      };
+      if (!response.ok || !body.application || !body.sdkKey) {
+        throw new Error(body.message ?? '어댑터 등록에 실패했습니다.');
+      }
+      setIssuedSdkKey(body.sdkKey);
+      await loadApplications();
+      setApplicationId(body.application.id);
+    } catch (createError) {
+      setLocalError(
+        createError instanceof Error
+          ? createError.message
+          : '어댑터 등록에 실패했습니다.',
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const createJob = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!applicationId) return;
+    setBusy(true);
+    setLocalError('');
+    try {
+      let variables: Record<string, unknown>;
+      try {
+        variables = JSON.parse(variablesJson) as Record<string, unknown>;
+      } catch {
+        throw new Error('Variables는 올바른 JSON 객체여야 합니다.');
+      }
+      if (
+        !variables ||
+        Array.isArray(variables) ||
+        typeof variables !== 'object'
+      ) {
+        throw new Error('Variables는 JSON 객체여야 합니다.');
+      }
+
+      const response = await fetch(
+        `${API_URL}/applications/${applicationId}/jobs`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            testCase: {
+              id: `dashboard-${Date.now()}`,
+              prompt,
+              variables,
+            },
+            timeoutMs,
+            maxAttempts: 3,
+          }),
+        },
+      );
+      const body = (await response.json()) as {
+        message?: string;
+      };
+      if (!response.ok) {
+        throw new Error(body.message ?? '테스트 Job 생성에 실패했습니다.');
+      }
+      await Promise.all([loadJobs(), loadApplications()]);
+    } catch (jobError) {
+      setLocalError(
+        jobError instanceof Error
+          ? jobError.message
+          : '테스트 Job 생성에 실패했습니다.',
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const selectedApplication = applications.find(
+    (application) => application.id === applicationId,
+  );
+
+  return (
+    <div className="adapter-layout">
+      <section className="panel workspace-section">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">LOCAL ADAPTER</p>
+            <h2>평가 어댑터</h2>
+            <p className="section-description">
+              기존 고객 AI를 수정하지 않고 별도 프로세스로 연결합니다.
+            </p>
+          </div>
+          <select
+            value={projectId}
+            onChange={(event) => {
+              setProjectId(event.target.value);
+              setIssuedSdkKey('');
+            }}
+          >
+            {projects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.name}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {localError && <div className="error-banner inline">{localError}</div>}
+
+        <div className="adapter-section">
+          <div>
+            <p className="eyebrow">STEP 1</p>
+            <h3>어댑터 등록</h3>
+          </div>
+          <form className="adapter-create-form" onSubmit={createApplication}>
+            <label>
+              이름
+              <input
+                value={applicationName}
+                onChange={(event) => setApplicationName(event.target.value)}
+                required
+              />
+            </label>
+            <label>
+              환경
+              <select
+                value={environment}
+                onChange={(event) => setEnvironment(event.target.value)}
+              >
+                <option value="development">development</option>
+                <option value="staging">staging</option>
+                <option value="production">production</option>
+              </select>
+            </label>
+            <button
+              className="primary-button inline"
+              disabled={busy || !projectId}
+            >
+              등록 및 SDK Key 발급
+            </button>
+          </form>
+
+          {issuedSdkKey && (
+            <div className="sdk-key-callout">
+              <div>
+                <strong>SDK Key는 지금 한 번만 표시됩니다.</strong>
+                <code>{issuedSdkKey}</code>
+              </div>
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={() => void navigator.clipboard.writeText(issuedSdkKey)}
+              >
+                복사
+              </button>
+            </div>
+          )}
+        </div>
+
+        <div className="adapter-section">
+          <div>
+            <p className="eyebrow">STEP 2</p>
+            <h3>연결 코드</h3>
+          </div>
+          <pre className="adapter-code">
+            <code>{`const adapter = createEvaluationAdapter({
+  baseUrl: '${API_URL}',
+  sdkKey: process.env.AIEVAL_SDK_KEY,
+  async invoke(testCase, context) {
+    const response = await fetch(process.env.CUSTOMER_AI_URL, {
+      method: 'POST',
+      signal: context.signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: testCase.prompt })
+    });
+    const data = await response.json();
+    return { output: data.answer };
+  }
+});
+
+await adapter.start();`}</code>
+          </pre>
+        </div>
+
+        <div className="adapter-section">
+          <div>
+            <p className="eyebrow">STEP 3</p>
+            <h3>연결 테스트</h3>
+          </div>
+          <form className="adapter-job-form" onSubmit={createJob}>
+            <label>
+              평가 대상
+              <select
+                value={applicationId}
+                onChange={(event) => setApplicationId(event.target.value)}
+                disabled={applications.length === 0}
+              >
+                {applications.length === 0 && (
+                  <option value="">먼저 어댑터를 등록하세요</option>
+                )}
+                {applications.map((application) => (
+                  <option key={application.id} value={application.id}>
+                    {application.name} · {application.environment}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Timeout(ms)
+              <input
+                type="number"
+                min="1000"
+                max="300000"
+                value={timeoutMs}
+                onChange={(event) => setTimeoutMs(Number(event.target.value))}
+              />
+            </label>
+            <label className="adapter-wide">
+              Prompt
+              <textarea
+                value={prompt}
+                onChange={(event) => setPrompt(event.target.value)}
+                required
+              />
+            </label>
+            <label className="adapter-wide">
+              Variables (JSON)
+              <textarea
+                className="code-input"
+                value={variablesJson}
+                onChange={(event) => setVariablesJson(event.target.value)}
+              />
+            </label>
+            <button
+              className="primary-button"
+              disabled={busy || !applicationId}
+            >
+              테스트 Job 보내기
+            </button>
+          </form>
+        </div>
+      </section>
+
+      <aside className="panel adapter-status-panel">
+        <div className="panel-heading compact">
+          <div>
+            <p className="eyebrow">EXECUTION</p>
+            <h2>어댑터 상태</h2>
+          </div>
+          <button
+            className="icon-button"
+            onClick={() => void Promise.all([loadApplications(), loadJobs()])}
+          >
+            ↻
+          </button>
+        </div>
+
+        {selectedApplication ? (
+          <div className="adapter-summary">
+            <div className="adapter-title">
+              <span
+                className={`status-dot ${
+                  jobs.some((job) =>
+                    ['CLAIMED', 'RUNNING'].includes(job.status),
+                  )
+                    ? 'running'
+                    : 'completed'
+                }`}
+              />
+              <div>
+                <strong>{selectedApplication.name}</strong>
+                <small>
+                  {selectedApplication.environment} ·{' '}
+                  {selectedApplication._count.jobs} jobs
+                </small>
+              </div>
+            </div>
+            <p>
+              Worker 온라인 여부는 heartbeat가 추가되기 전까지 실행 중인 Job으로
+              판단합니다.
+            </p>
+          </div>
+        ) : (
+          <div className="empty-state">등록된 어댑터가 없습니다.</div>
+        )}
+
+        <div className="adapter-job-list">
+          {jobs.length === 0 && applicationId && (
+            <div className="empty-state">아직 실행한 Job이 없습니다.</div>
+          )}
+          {jobs.map((job) => (
+            <article key={job.id}>
+              <header>
+                <span className={`job-status ${job.status.toLowerCase()}`}>
+                  {job.status}
+                </span>
+                <small>{formatDate(job.createdAt)}</small>
+              </header>
+              <strong>{job.testCase.prompt ?? 'Prompt 없음'}</strong>
+              <p>
+                attempt {job.attempt}/{job.maxAttempts} · timeout{' '}
+                {job.timeoutMs}ms
+              </p>
+              {job.output?.text && (
+                <div className="job-output">{job.output.text}</div>
+              )}
+              {job.error?.message && (
+                <div className="job-error">
+                  {job.error.code}: {job.error.message}
+                </div>
+              )}
+            </article>
+          ))}
+        </div>
+      </aside>
+    </div>
   );
 }
 

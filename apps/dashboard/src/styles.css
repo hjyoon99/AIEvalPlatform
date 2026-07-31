@@ -169,6 +169,10 @@ h1 {
   font-size: 13px;
 }
 
+.error-banner.inline {
+  margin: 20px 0 0;
+}
+
 .summary-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1085,6 +1089,218 @@ select:focus {
   grid-column: 1 / -1;
 }
 
+.adapter-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(340px, 0.65fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.adapter-section {
+  padding: 24px 0;
+  border-bottom: 1px solid #eceef3;
+}
+
+.adapter-section:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.adapter-section h3 {
+  color: #30394b;
+  font-size: 15px;
+}
+
+.adapter-create-form {
+  display: grid;
+  grid-template-columns: 1.4fr 0.8fr auto;
+  gap: 12px;
+  align-items: end;
+  padding-top: 16px;
+}
+
+.sdk-key-callout {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid #ead794;
+  border-radius: 10px;
+  background: #fffaf0;
+}
+
+.sdk-key-callout strong,
+.sdk-key-callout code {
+  display: block;
+}
+
+.sdk-key-callout strong {
+  margin-bottom: 7px;
+  color: #765c20;
+  font-size: 11px;
+}
+
+.sdk-key-callout code {
+  color: #393420;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.adapter-code {
+  overflow: auto;
+  margin: 16px 0 0;
+  padding: 17px;
+  border-radius: 11px;
+  background: #161d2d;
+  color: #dbe3f3;
+  font: 500 11px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.adapter-job-form {
+  display: grid;
+  grid-template-columns: 1fr 0.5fr;
+  gap: 12px;
+  padding-top: 16px;
+}
+
+.adapter-job-form .adapter-wide,
+.adapter-job-form .primary-button {
+  grid-column: 1 / -1;
+}
+
+.code-input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.adapter-status-panel {
+  position: sticky;
+  top: 24px;
+  overflow: hidden;
+}
+
+.adapter-summary {
+  padding: 17px;
+  border-bottom: 1px solid #eceef3;
+  background: #fafbfc;
+}
+
+.adapter-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.adapter-title strong,
+.adapter-title small {
+  display: block;
+}
+
+.adapter-title strong {
+  color: #354052;
+  font-size: 12px;
+}
+
+.adapter-title small,
+.adapter-summary > p {
+  color: #9098a7;
+  font-size: 9px;
+}
+
+.adapter-title small {
+  margin-top: 3px;
+}
+
+.adapter-summary > p {
+  margin: 12px 0 0;
+  line-height: 1.5;
+}
+
+.adapter-job-list {
+  max-height: 660px;
+  overflow: auto;
+  padding: 8px;
+}
+
+.adapter-job-list article {
+  padding: 13px;
+  border-bottom: 1px solid #eceef3;
+}
+
+.adapter-job-list article:last-child {
+  border-bottom: 0;
+}
+
+.adapter-job-list header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 9px;
+}
+
+.adapter-job-list header small {
+  color: #9aa1ae;
+  font-size: 9px;
+}
+
+.adapter-job-list article > strong {
+  display: block;
+  color: #3e4759;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.adapter-job-list article > p {
+  margin: 6px 0 0;
+  color: #929aa8;
+  font-size: 9px;
+}
+
+.job-status {
+  padding: 4px 6px;
+  border-radius: 5px;
+  background: #f0f1f4;
+  color: #697284;
+  font: 700 8px 'Manrope';
+  letter-spacing: 0.05em;
+}
+
+.job-status.completed {
+  color: #24875f;
+  background: #e8f8f1;
+}
+
+.job-status.failed {
+  color: #b64c46;
+  background: #fff0ef;
+}
+
+.job-status.running,
+.job-status.claimed {
+  color: #9a6b1e;
+  background: #fff6df;
+}
+
+.job-output,
+.job-error {
+  margin-top: 10px;
+  padding: 9px;
+  border-radius: 7px;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.job-output {
+  color: #376b57;
+  background: #eff9f4;
+}
+
+.job-error {
+  color: #a54d47;
+  background: #fff1f0;
+}
+
 @media (max-width: 1120px) {
   main {
     padding: 32px 28px 48px;
@@ -1092,6 +1308,14 @@ select:focus {
 
   .workspace-grid {
     grid-template-columns: 1fr;
+  }
+
+  .adapter-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .adapter-status-panel {
+    position: static;
   }
 
   .right-column {
@@ -1150,8 +1374,15 @@ select:focus {
   .project-create-grid,
   .scenario-grid,
   .policy-layout,
+  .adapter-create-form,
+  .adapter-job-form,
   .metric-row {
     grid-template-columns: 1fr;
+  }
+
+  .adapter-job-form .adapter-wide,
+  .adapter-job-form .primary-button {
+    grid-column: auto;
   }
 
   .scenario-actions {

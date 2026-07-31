@@ -22,6 +22,7 @@ model Project {
   policies    EvaluationPolicy[]
   scenarios   Scenario[]
   evalRuns    EvalRun[]
+  applications AIApplication[]
 }
 
 model EvaluationPolicy {
@@ -94,4 +95,42 @@ model EvalResult {
   retryCount     Int      @default(0)
   durationMs     Int?
   createdAt      DateTime @default(now())
+}
+
+model AIApplication {
+  id          String   @id @default(uuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name        String
+  environment String   @default("development")
+  sdkKeyHash  String   @unique
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  jobs        SdkJob[]
+
+  @@index([projectId])
+}
+
+model SdkJob {
+  id              String        @id @default(uuid())
+  applicationId   String
+  application     AIApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  testCase        Json
+  status          String        @default("PENDING")
+  attempt         Int           @default(0)
+  maxAttempts     Int           @default(3)
+  timeoutMs       Int           @default(30000)
+  leaseId         String?
+  leaseExpiresAt  DateTime?
+  idempotencyKey  String?       @unique
+  output          Json?
+  error           Json?
+  startedAt       DateTime?
+  completedAt     DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@index([applicationId, status, createdAt])
+  @@index([leaseExpiresAt])
 }
