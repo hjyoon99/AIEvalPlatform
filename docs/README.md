@@ -34,6 +34,25 @@
    - 기존 고객 AI를 수정하지 않는 별도 어댑터 구조
    - `invoke()` 기반 고객 payload와 표준 결과 매핑
    - 배포, 보안, 오류 처리와 MVP 완료 기준
+8. [평가 실행 자동화 데이터 및 오케스트레이션 설계](./Evaluation-Run-Automation-Design.md)
+   - `EvalRun`, `EvalRunCase`, `SdkJob`, `JudgeJob`, `EvalResult` 관계
+   - ADAPTER/PROVIDED_OUTPUT 실행과 REFERENCE_BASED/RUBRIC_ONLY 평가
+   - 상태 전이, 트랜잭션, 최종 상태 집계와 사용자 가치
+9. [자동 평가 사용 방법](./Automated-Evaluation-Usage.md)
+   - PostgreSQL, Ollama, Agent Engine, Backend와 Dashboard 실행
+   - PROVIDED_OUTPUT 및 ADAPTER 자동 Run 생성
+   - Mock Judge/Adapter 테스트와 상태별 문제 해결
+10. [Docker Compose 통합 실행 및 고객사 배포](./Docker-Compose-Deployment-Plan.md)
+   - Mock 평가 서비스를 한 번에 실행하는 방법
+   - Mock/실제 고객사 프로필과 컨테이너 네트워크
+   - Adapter, Ollama, 환경변수 및 통합 구현 완료 기준
+11. [고객 AI Adapter 연동 가이드](./Customer-Adapter-Integration-Guide.md)
+   - 대시보드에서 Application 등록 및 SDK Key 발급
+   - 고객 프로젝트의 Adapter 디렉터리와 파일 구성
+   - Chat/RAG/세션/도구 호출 API 매핑과 전체 평가 실행
+12. [대시보드 리소스 추가·삭제 가이드](./Dashboard-Resource-Management.md)
+   - 프로젝트, 평가 실행, 시나리오, 정책, 어댑터 관리
+   - 삭제 영향 범위와 MVP의 권한·복구 제한
 
 ## 문서의 사실 범위
 

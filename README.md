@@ -229,22 +229,26 @@ AI가 생성한 시나리오를 자동 승인하지 않는다. 자동 검증은 
 - 시나리오 수정, 승인과 거절
 - 직접 dataset 또는 Scenario 기반 평가
 - LangGraph 기반 다단계 평가
+- 별도 Adapter를 통한 고객 AI 답변 자동 수집
+- ADAPTER 및 PROVIDED_OUTPUT 비동기 자동 평가
+- JudgeJob 재시도와 실행별 진행률 집계
 - 평가 실행과 결과 이력 저장
 - 평가 요약 및 상세 Dashboard
 
 ## 현재 한계
 
 - 인증, 사용자와 프로젝트별 권한이 없다.
-- 평가 실행이 동기 HTTP 요청이므로 대규모 dataset 처리에 적합하지 않다.
-- 비동기 평가 API에는 결과 조회와 DB 저장이 연결되어 있지 않다.
+- 자동 Run 생성은 아직 Dashboard 입력 화면이 아니라 API를 사용한다.
+- Judge Worker가 Backend 프로세스와 함께 실행되며 독립 배포와 수평 확장은 아직 제공하지 않는다.
+- 대규모 dataset을 위한 동시성 제어, rate limit와 실행 취소가 없다.
 - 역할별 모델, 프롬프트와 Ollama 모델 digest가 완전한 스냅샷으로 저장되지 않는다.
 - 다중 Judge 합의나 평가 결과 분산 분석은 아직 제공하지 않는다.
 - 외부 SaaS 모델 연결보다 로컬 Ollama 실행을 중심으로 구현되어 있다.
 
 ## 향후 발전 방향
 
-1. Queue와 Worker 기반 비동기 대량 평가
-2. 실행 진행률 polling, SSE 또는 WebSocket 제공
+1. 자동 Run 생성 Dashboard와 JSONL/CSV 업로드
+2. Judge Worker 독립 배포, 병렬 처리와 rate limit
 3. 역할별 모델 선택과 모델 버전 스냅샷
 4. 다중 Judge 합의 및 평가 신뢰구간
 5. Golden dataset을 이용한 Judge 보정
@@ -255,6 +259,13 @@ AI가 생성한 시나리오를 자동 승인하지 않는다. 자동 검증은 
 
 ## 관련 문서
 
+- [자동 평가 사용 방법](./docs/Automated-Evaluation-Usage.md)
+- [평가 실행 자동화 설계](./docs/Evaluation-Run-Automation-Design.md)
+- [Docker Compose 통합 실행 및 고객사 배포 계획](./docs/Docker-Compose-Deployment-Plan.md)
+- [고객 AI Adapter 연동 가이드](./docs/Customer-Adapter-Integration-Guide.md)
+- [대시보드 리소스 추가·삭제 가이드](./docs/Dashboard-Resource-Management.md)
+- [평가 어댑터 MVP 설계](./docs/Evaluation-Adapter-MVP-Design.md)
+- [SDK 실행 프로토콜](./docs/SDK-Execution-Protocol.md)
 - [전체 시스템 구조](https://github.com/hjyoon99/AIEvalPlatform/wiki/System-Architecture)
 - [데이터 파이프라인 및 흐름](https://github.com/hjyoon99/AIEvalPlatform/wiki/Data-Pipeline)
 - [AI 평가 엔진 설계](https://github.com/hjyoon99/AIEvalPlatform/wiki/AI-Evaluation-Engine)
