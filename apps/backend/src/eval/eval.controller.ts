@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post } from '@nestjs/common';
 import { EvalService } from './eval.service';
 import type { StartEvalRunInput } from './eval.service';
 
@@ -24,5 +24,10 @@ export class EvalController {
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.evalService.findOne(id);
+  }
+
+  @Delete(':id')
+  remove(@Param('id') id: string) {
+    return this.evalService.remove(id);
   }
 }

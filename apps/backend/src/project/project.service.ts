@@ -1,6 +1,7 @@
 import {
   BadGatewayException,
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -33,6 +34,17 @@ export interface GenerateScenariosInput {
   policyId?: string;
   count?: number;
   model?: string;
+}
+
+export interface CreateScenarioInput {
+  title: string;
+  category?: string;
+  prompt: string;
+  testOutput?: string;
+  expectedOutput?: string;
+  expectedBehavior?: string[];
+  evaluationRubric?: Record<string, unknown>;
+  riskLevel?: string;
 }
 
 export interface ReviewScenarioInput {
@@ -94,6 +106,23 @@ export class ProjectService {
     });
   }
 
+  async deleteProject(projectId: string) {
+    await this.requireProject(projectId);
+    const activeRuns = await this.prisma.evalRun.count({
+      where: {
+        projectId,
+        status: { in: ['QUEUED', 'RUNNING'] },
+      },
+    });
+    if (activeRuns > 0) {
+      throw new ConflictException(
+        'A project with queued or running evaluations cannot be deleted',
+      );
+    }
+    await this.prisma.project.delete({ where: { id: projectId } });
+    return { id: projectId, deleted: true };
+  }
+
   async createPolicy(projectId: string, input: CreatePolicyInput) {
     await this.requireProject(projectId);
     this.validatePolicy(input);
@@ -112,6 +141,40 @@ export class ProjectService {
     return this.prisma.evaluationPolicy.findMany({
       where: { projectId },
       orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  async deletePolicy(policyId: string) {
+    const policy = await this.prisma.evaluationPolicy.findUnique({
+      where: { id: policyId },
+      select: { id: true },
+    });
+    if (!policy) {
+      throw new NotFoundException('Evaluation policy not found');
+    }
+    await this.prisma.evaluationPolicy.delete({ where: { id: policyId } });
+    return { id: policyId, deleted: true };
+  }
+
+  async createScenario(projectId: string, input: CreateScenarioInput) {
+    await this.requireProject(projectId);
+    if (!input?.title?.trim() || !input?.prompt?.trim()) {
+      throw new BadRequestException('title and prompt are required');
+    }
+    return this.prisma.scenario.create({
+      data: {
+        projectId,
+        title: input.title.trim(),
+        category: input.category?.trim() || null,
+        prompt: input.prompt.trim(),
+        testOutput: input.testOutput?.trim() || null,
+        expectedOutput: input.expectedOutput?.trim() || null,
+        expectedBehavior: input.expectedBehavior,
+        evaluationRubric: input.evaluationRubric as
+          Prisma.InputJsonValue | undefined,
+        riskLevel: input.riskLevel?.trim() || 'MEDIUM',
+        status: 'DRAFT',
+      },
     });
   }
 
@@ -222,6 +285,18 @@ export class ProjectService {
         reviewedAt: null,
       },
     });
+  }
+
+  async deleteScenario(scenarioId: string) {
+    const scenario = await this.prisma.scenario.findUnique({
+      where: { id: scenarioId },
+      select: { id: true },
+    });
+    if (!scenario) {
+      throw new NotFoundException('Scenario not found');
+    }
+    await this.prisma.scenario.delete({ where: { id: scenarioId } });
+    return { id: scenarioId, deleted: true };
   }
 
   private async requireProject(projectId: string) {

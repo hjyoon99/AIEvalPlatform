@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Headers,
   HttpCode,
@@ -34,6 +35,11 @@ export class SdkProtocolController {
   @Get('projects/:projectId/applications')
   getApplications(@Param('projectId') projectId: string) {
     return this.sdkProtocolService.getApplications(projectId);
+  }
+
+  @Delete('applications/:applicationId')
+  deleteApplication(@Param('applicationId') applicationId: string) {
+    return this.sdkProtocolService.deleteApplication(applicationId);
   }
 
   @Post('applications/:applicationId/jobs')
