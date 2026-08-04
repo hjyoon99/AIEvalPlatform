@@ -61,6 +61,17 @@ type EvalRun = {
   maxRetries: number;
   createdAt: string;
   results: EvalResult[];
+  progress?: {
+    total: number;
+    waitingForExecution: number;
+    executing: number;
+    waitingForJudge: number;
+    judging: number;
+    completed: number;
+    reviewRequired: number;
+    failed: number;
+    cancelled: number;
+  };
 };
 
 type Summary = {
@@ -217,6 +228,7 @@ function App() {
   const [dataset, setDataset] = useState(initialDataset);
   const [selectedRunId, setSelectedRunId] = useState<string>();
   const [isRunning, setIsRunning] = useState(false);
+  const [projectManagerOpen, setProjectManagerOpen] = useState(false);
   const [error, setError] = useState('');
 
   const selectedRun = useMemo(
@@ -239,9 +251,11 @@ function App() {
       setSummary((await summaryResponse.json()) as Summary);
       const nextProjects = (await projectsResponse.json()) as Project[];
       setProjects(nextProjects);
-      if (!projectId && nextProjects[0]) {
-        setProjectId(nextProjects[0].id);
-      }
+      setProjectId((current) =>
+        nextProjects.some((project) => project.id === current)
+          ? current
+          : nextProjects[0]?.id ?? '',
+      );
       setError('');
     } catch (loadError) {
       setError(
@@ -250,11 +264,24 @@ function App() {
           : 'NestJS API 연결을 확인해주세요.',
       );
     }
-  }, [projectId]);
+  }, []);
 
   useEffect(() => {
     void loadDashboard();
   }, [loadDashboard]);
+
+  useEffect(() => {
+    const hasActiveAutomatedRun = runs.some(
+      (run) =>
+        (run.progress?.total ?? 0) > 0 &&
+        ['QUEUED', 'RUNNING'].includes(run.status),
+    );
+    if (!hasActiveAutomatedRun) return;
+    const timer = window.setInterval(() => {
+      void loadDashboard();
+    }, 2_000);
+    return () => window.clearInterval(timer);
+  }, [loadDashboard, runs]);
 
   useEffect(() => {
     if (!projectId) {
@@ -295,6 +322,22 @@ function App() {
 
   const removeDatasetItem = (index: number) => {
     setDataset((items) => items.filter((_, itemIndex) => itemIndex !== index));
+  };
+
+  const removeRun = async (run: EvalRun) => {
+    if (!window.confirm(`"${run.name}" 평가 실행과 결과를 삭제할까요?`)) return;
+    const response = await fetch(`${API_URL}/eval-runs/${run.id}`, {
+      method: 'DELETE',
+    });
+    if (!response.ok) {
+      const body = (await response.json()) as { message?: string };
+      setError(body.message ?? '평가 실행 삭제에 실패했습니다.');
+      return;
+    }
+    if (selectedRunId === run.id) {
+      setSelectedRunId(undefined);
+    }
+    await loadDashboard();
   };
 
   const submitRun = async (event: FormEvent) => {
@@ -385,11 +428,27 @@ function App() {
             <h1>Evaluation workspace</h1>
             <p>에이전트 답변을 실행하고, 검증하고, 감독합니다.</p>
           </div>
-          <div className="engine-pill">
-            <span />
-            qwen3.5:4b · local
+          <div className="header-actions">
+            <button
+              className="secondary-button"
+              onClick={() => setProjectManagerOpen(true)}
+            >
+              프로젝트 관리
+            </button>
+            <div className="engine-pill">
+              <span />
+              qwen3.5:4b · local
+            </div>
           </div>
         </header>
+
+        {projectManagerOpen && (
+          <ProjectManager
+            projects={projects}
+            onClose={() => setProjectManagerOpen(false)}
+            onChanged={loadDashboard}
+          />
+        )}
 
         {error && <div className="error-banner">{error}</div>}
 
@@ -607,26 +666,44 @@ function App() {
                     (result) => result.verdict === 'PASS',
                   ).length;
                   return (
-                    <button
+                    <div
                       key={run.id}
                       className={`run-row ${
                         selectedRun?.id === run.id ? 'selected' : ''
                       }`}
-                      onClick={() => setSelectedRunId(run.id)}
                     >
-                      <span
-                        className={`status-dot ${run.status.toLowerCase()}`}
-                      />
-                      <span className="run-copy">
-                        <strong>{run.name}</strong>
-                        <small>
-                          {run.agentName} · {formatDate(run.createdAt)}
-                        </small>
-                      </span>
-                      <span className="run-score">
-                        {passed}/{run.results.length}
-                      </span>
-                    </button>
+                      <button
+                        className="run-select"
+                        onClick={() => setSelectedRunId(run.id)}
+                      >
+                        <span
+                          className={`status-dot ${run.status.toLowerCase()}`}
+                        />
+                        <span className="run-copy">
+                          <strong>{run.name}</strong>
+                          <small>
+                            {run.agentName} · {formatDate(run.createdAt)}
+                          </small>
+                        </span>
+                        <span className="run-score">
+                          {run.progress?.total
+                            ? `${
+                                run.progress.completed +
+                                run.progress.reviewRequired +
+                                run.progress.failed
+                              }/${run.progress.total}`
+                            : `${passed}/${run.results.length}`}
+                        </span>
+                      </button>
+                      <button
+                        className="run-delete"
+                        aria-label={`${run.name} 삭제`}
+                        disabled={['QUEUED', 'RUNNING'].includes(run.status)}
+                        onClick={() => void removeRun(run)}
+                      >
+                        ×
+                      </button>
+                    </div>
                   );
                 })}
               </div>
@@ -650,6 +727,10 @@ function App() {
               </span>
             )}
           </div>
+
+          {selectedRun?.progress && selectedRun.progress.total > 0 && (
+            <RunProgress progress={selectedRun.progress} />
+          )}
 
           <div className="result-explorer-list">
             {!selectedRun && (
@@ -690,9 +771,44 @@ function App() {
           <AdapterWorkspace
             projects={projects}
             onProjectsChanged={loadDashboard}
+            onRunCreated={async (runId) => {
+              setSelectedRunId(runId);
+              await loadDashboard();
+              setActiveView('runs');
+            }}
           />
         )}
       </main>
+    </div>
+  );
+}
+
+function RunProgress({ progress }: { progress: NonNullable<EvalRun['progress']> }) {
+  const finished =
+    progress.completed + progress.reviewRequired + progress.failed;
+  const percent =
+    progress.total === 0 ? 0 : Math.round((finished / progress.total) * 100);
+
+  return (
+    <div className="automation-progress">
+      <div className="progress-summary">
+        <div>
+          <span>AUTOMATED PIPELINE</span>
+          <strong>{percent}%</strong>
+        </div>
+        <div className="progress-track">
+          <i style={{ width: `${percent}%` }} />
+        </div>
+      </div>
+      <div className="progress-stages">
+        <span>실행 대기 <strong>{progress.waitingForExecution}</strong></span>
+        <span>답변 생성 <strong>{progress.executing}</strong></span>
+        <span>Judge 대기 <strong>{progress.waitingForJudge}</strong></span>
+        <span>평가 중 <strong>{progress.judging}</strong></span>
+        <span>완료 <strong>{progress.completed}</strong></span>
+        <span>검토 필요 <strong>{progress.reviewRequired}</strong></span>
+        <span>실패 <strong>{progress.failed}</strong></span>
+      </div>
     </div>
   );
 }
@@ -921,12 +1037,162 @@ function ProjectCreator({
   );
 }
 
+function ProjectManager({
+  projects,
+  onClose,
+  onChanged,
+}: {
+  projects: Project[];
+  onClose: () => void;
+  onChanged: () => Promise<void>;
+}) {
+  const [name, setName] = useState('');
+  const [domain, setDomain] = useState('');
+  const [description, setDescription] = useState('');
+  const [busyId, setBusyId] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState('');
+
+  const create = async (event: FormEvent) => {
+    event.preventDefault();
+    setCreating(true);
+    setError('');
+    try {
+      const response = await fetch(`${API_URL}/projects`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, domain, description }),
+      });
+      const body = (await response.json()) as { message?: string };
+      if (!response.ok) {
+        throw new Error(body.message ?? '프로젝트 생성에 실패했습니다.');
+      }
+      setName('');
+      setDomain('');
+      setDescription('');
+      await onChanged();
+    } catch (createError) {
+      setError(
+        createError instanceof Error
+          ? createError.message
+          : '프로젝트 생성에 실패했습니다.',
+      );
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const remove = async (project: Project) => {
+    const confirmed = window.confirm(
+      `"${project.name}" 프로젝트를 삭제할까요?\n\n소속 시나리오, 정책, 어댑터와 Job도 함께 삭제됩니다. 기존 평가 Run은 프로젝트 연결이 해제된 상태로 보존됩니다.`,
+    );
+    if (!confirmed) return;
+    setBusyId(project.id);
+    setError('');
+    try {
+      const response = await fetch(`${API_URL}/projects/${project.id}`, {
+        method: 'DELETE',
+      });
+      if (!response.ok) {
+        const body = (await response.json()) as { message?: string };
+        throw new Error(body.message ?? '프로젝트 삭제에 실패했습니다.');
+      }
+      await onChanged();
+    } catch (removeError) {
+      setError(
+        removeError instanceof Error
+          ? removeError.message
+          : '프로젝트 삭제에 실패했습니다.',
+      );
+    } finally {
+      setBusyId('');
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <section
+        className="project-manager-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="project-manager-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <header>
+          <div>
+            <p className="eyebrow">PROJECT MANAGEMENT</p>
+            <h2 id="project-manager-title">프로젝트 관리</h2>
+          </div>
+          <button className="modal-close" onClick={onClose} aria-label="닫기">
+            ×
+          </button>
+        </header>
+
+        <form className="project-manager-form" onSubmit={create}>
+          <label>
+            프로젝트 이름
+            <input
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              required
+            />
+          </label>
+          <label>
+            도메인
+            <input
+              value={domain}
+              onChange={(event) => setDomain(event.target.value)}
+              required
+            />
+          </label>
+          <label className="project-manager-wide">
+            설명
+            <input
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+            />
+          </label>
+          <button className="primary-button inline" disabled={creating}>
+            {creating ? '추가 중…' : '새 프로젝트 추가'}
+          </button>
+        </form>
+
+        {error && <div className="error-banner inline">{error}</div>}
+
+        <div className="project-manager-list">
+          {projects.length === 0 && (
+            <div className="empty-state">등록된 프로젝트가 없습니다.</div>
+          )}
+          {projects.map((project) => (
+            <article key={project.id}>
+              <div>
+                <strong>{project.name}</strong>
+                <small>{project.domain}</small>
+                {project.description && <p>{project.description}</p>}
+              </div>
+              <button
+                className="danger-button"
+                disabled={busyId === project.id}
+                onClick={() => void remove(project)}
+              >
+                {busyId === project.id ? '삭제 중…' : '삭제'}
+              </button>
+            </article>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function AdapterWorkspace({
   projects,
   onProjectsChanged,
+  onRunCreated,
 }: {
   projects: Project[];
   onProjectsChanged: () => Promise<void>;
+  onRunCreated: (runId: string) => Promise<void>;
 }) {
   const [projectId, setProjectId] = useState(projects[0]?.id ?? '');
   const [applications, setApplications] = useState<AIApplication[]>([]);
@@ -938,15 +1204,26 @@ function AdapterWorkspace({
   const [environment, setEnvironment] = useState('development');
   const [issuedSdkKey, setIssuedSdkKey] = useState('');
   const [prompt, setPrompt] = useState('주문을 취소할 수 있나요?');
+  const [evaluationName, setEvaluationName] = useState(
+    '어댑터 전체 품질 평가',
+  );
+  const [expectedOutput, setExpectedOutput] = useState(
+    '주문 상태를 확인한 뒤 취소 가능 여부를 안내합니다.',
+  );
+  const [rubricText, setRubricText] = useState(
+    '정확성\n관련성\n완전성\n근거 충실성\n안전성',
+  );
   const [variablesJson, setVariablesJson] = useState('{}');
   const [timeoutMs, setTimeoutMs] = useState(30_000);
   const [busy, setBusy] = useState(false);
   const [localError, setLocalError] = useState('');
 
   useEffect(() => {
-    if (!projectId && projects[0]) {
-      setProjectId(projects[0].id);
-    }
+    setProjectId((current) =>
+      projects.some((project) => project.id === current)
+        ? current
+        : projects[0]?.id ?? '',
+    );
   }, [projectId, projects]);
 
   const loadApplications = useCallback(async () => {
@@ -1106,9 +1383,111 @@ function AdapterWorkspace({
     }
   };
 
+  const createEvaluation = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!applicationId || !projectId) return;
+    setBusy(true);
+    setLocalError('');
+    try {
+      let variables: Record<string, unknown>;
+      try {
+        variables = JSON.parse(variablesJson) as Record<string, unknown>;
+      } catch {
+        throw new Error('Variables는 올바른 JSON 객체여야 합니다.');
+      }
+      if (
+        !variables ||
+        Array.isArray(variables) ||
+        typeof variables !== 'object'
+      ) {
+        throw new Error('Variables는 JSON 객체여야 합니다.');
+      }
+      const rubricNames = rubricText
+        .split('\n')
+        .map((item) => item.trim())
+        .filter(Boolean);
+      if (!expectedOutput.trim() && rubricNames.length === 0) {
+        throw new Error(
+          '기대 답변이 없으면 평가 기준을 한 개 이상 입력해야 합니다.',
+        );
+      }
+      const response = await fetch(`${API_URL}/eval-runs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: evaluationName,
+          projectId,
+          applicationId,
+          executionMode: 'ADAPTER',
+          judgeModel: 'mock-judge',
+          timeoutMs,
+          maxAttempts: 3,
+          dataset: [
+            {
+              id: `dashboard-adapter-${Date.now()}`,
+              prompt,
+              variables,
+              expectedOutput: expectedOutput || undefined,
+              criteria: rubricNames.map((rubricName, index) => ({
+                key: `criterion_${index + 1}`,
+                name: rubricName,
+                description: `${rubricName} 기준을 충족하는지 평가`,
+                weight: 1 / rubricNames.length,
+              })),
+            },
+          ],
+        }),
+      });
+      const body = (await response.json()) as EvalRun & { message?: string };
+      if (!response.ok || !body.id) {
+        throw new Error(body.message ?? '전체 평가 실행에 실패했습니다.');
+      }
+      await onRunCreated(body.id);
+    } catch (evaluationError) {
+      setLocalError(
+        evaluationError instanceof Error
+          ? evaluationError.message
+          : '전체 평가 실행에 실패했습니다.',
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const selectedApplication = applications.find(
     (application) => application.id === applicationId,
   );
+
+  const removeApplication = async () => {
+    if (!selectedApplication) return;
+    const confirmed = window.confirm(
+      `"${selectedApplication.name}" 어댑터를 삭제할까요?\n\nSDK Key가 즉시 무효화되고 이 어댑터의 Job도 함께 삭제됩니다.`,
+    );
+    if (!confirmed) return;
+    setBusy(true);
+    setLocalError('');
+    try {
+      const response = await fetch(
+        `${API_URL}/applications/${selectedApplication.id}`,
+        { method: 'DELETE' },
+      );
+      if (!response.ok) {
+        const body = (await response.json()) as { message?: string };
+        throw new Error(body.message ?? '어댑터 삭제에 실패했습니다.');
+      }
+      setIssuedSdkKey('');
+      setJobs([]);
+      await loadApplications();
+    } catch (removeError) {
+      setLocalError(
+        removeError instanceof Error
+          ? removeError.message
+          : '어댑터 삭제에 실패했습니다.',
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <div className="adapter-layout">
@@ -1270,6 +1649,53 @@ await adapter.start();`}</code>
             </button>
           </form>
         </div>
+
+        <div className="adapter-section">
+          <div>
+            <p className="eyebrow">STEP 4</p>
+            <h3>전체 평가 실행</h3>
+            <p className="section-description">
+              위 Prompt와 Variables로 고객 AI 답변을 생성하고 Mock Judge의
+              다차원 평가까지 실행합니다.
+            </p>
+          </div>
+          <form className="adapter-job-form" onSubmit={createEvaluation}>
+            <label className="adapter-wide">
+              평가 이름
+              <input
+                value={evaluationName}
+                onChange={(event) => setEvaluationName(event.target.value)}
+                required
+              />
+            </label>
+            <label className="adapter-wide">
+              기대 답변
+              <textarea
+                value={expectedOutput}
+                onChange={(event) => setExpectedOutput(event.target.value)}
+                placeholder="비워두면 루브릭 기반으로 평가합니다."
+              />
+            </label>
+            <label className="adapter-wide">
+              평가 기준
+              <small>
+                한 줄에 하나씩 입력합니다. 기대 답변을 비우면 이 기준으로
+                RUBRIC_ONLY 평가를 실행합니다.
+              </small>
+              <textarea
+                value={rubricText}
+                onChange={(event) => setRubricText(event.target.value)}
+                required={!expectedOutput.trim()}
+              />
+            </label>
+            <button
+              className="primary-button"
+              disabled={busy || !applicationId}
+            >
+              {busy ? '평가 실행 중…' : '전체 평가 실행 및 결과 보기'}
+            </button>
+          </form>
+        </div>
       </section>
 
       <aside className="panel adapter-status-panel">
@@ -1306,6 +1732,13 @@ await adapter.start();`}</code>
                 </small>
               </div>
             </div>
+            <button
+              className="danger-button"
+              disabled={busy}
+              onClick={() => void removeApplication()}
+            >
+              어댑터 삭제
+            </button>
             <p>
               Worker 온라인 여부는 heartbeat가 추가되기 전까지 실행 중인 Job으로
               판단합니다.
@@ -1364,13 +1797,21 @@ function ScenarioWorkspace({
   const [count, setCount] = useState(3);
   const [loading, setLoading] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [showManualCreate, setShowManualCreate] = useState(false);
+  const [newScenarioTitle, setNewScenarioTitle] = useState('');
+  const [newScenarioPrompt, setNewScenarioPrompt] = useState('');
+  const [newScenarioExpected, setNewScenarioExpected] = useState('');
   const [error, setError] = useState('');
   const [selectedScenario, setSelectedScenario] = useState<Scenario | null>(
     null,
   );
 
   useEffect(() => {
-    if (!projectId && projects[0]) setProjectId(projects[0].id);
+    setProjectId((current) =>
+      projects.some((project) => project.id === current)
+        ? current
+        : projects[0]?.id ?? '',
+    );
   }, [projectId, projects]);
 
   const load = useCallback(async () => {
@@ -1413,6 +1854,57 @@ function ScenarioWorkspace({
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status }),
     });
+    await load();
+  };
+
+  const createScenario = async (event: FormEvent) => {
+    event.preventDefault();
+    setLoading(true);
+    setError('');
+    try {
+      const response = await fetch(`${API_URL}/projects/${projectId}/scenarios`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: newScenarioTitle,
+          prompt: newScenarioPrompt,
+          expectedOutput: newScenarioExpected || undefined,
+        }),
+      });
+      if (!response.ok) {
+        const body = (await response.json()) as { message?: string };
+        throw new Error(body.message ?? '시나리오 추가에 실패했습니다.');
+      }
+      setNewScenarioTitle('');
+      setNewScenarioPrompt('');
+      setNewScenarioExpected('');
+      setShowManualCreate(false);
+      await load();
+    } catch (createError) {
+      setError(
+        createError instanceof Error
+          ? createError.message
+          : '시나리오 추가에 실패했습니다.',
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const removeScenario = async (scenario: Scenario) => {
+    if (!window.confirm(`"${scenario.title}" 시나리오를 삭제할까요?`)) return;
+    setError('');
+    const response = await fetch(`${API_URL}/scenarios/${scenario.id}`, {
+      method: 'DELETE',
+    });
+    if (!response.ok) {
+      const body = (await response.json()) as { message?: string };
+      setError(body.message ?? '시나리오 삭제에 실패했습니다.');
+      return;
+    }
+    if (selectedScenario?.id === scenario.id) {
+      setSelectedScenario(null);
+    }
     await load();
   };
 
@@ -1489,6 +1981,12 @@ function ScenarioWorkspace({
             {loading ? '생성·검증 중…' : 'AI 시나리오 생성'}
           </button>
           <button
+            className="secondary-button"
+            onClick={() => setShowManualCreate((current) => !current)}
+          >
+            {showManualCreate ? '직접 추가 닫기' : '+ 직접 추가'}
+          </button>
+          <button
             className="primary-button inline"
             onClick={() => void runApprovedScenarios()}
             disabled={testing}
@@ -1498,6 +1996,36 @@ function ScenarioWorkspace({
         </div>
       </div>
       {error && <div className="error-banner">{error}</div>}
+      {showManualCreate && (
+        <form className="manual-scenario-form" onSubmit={createScenario}>
+          <label>
+            제목
+            <input
+              value={newScenarioTitle}
+              onChange={(event) => setNewScenarioTitle(event.target.value)}
+              required
+            />
+          </label>
+          <label className="manual-scenario-wide">
+            질문
+            <textarea
+              value={newScenarioPrompt}
+              onChange={(event) => setNewScenarioPrompt(event.target.value)}
+              required
+            />
+          </label>
+          <label className="manual-scenario-wide">
+            기대 답변
+            <textarea
+              value={newScenarioExpected}
+              onChange={(event) => setNewScenarioExpected(event.target.value)}
+            />
+          </label>
+          <button className="primary-button inline" disabled={loading}>
+            시나리오 추가
+          </button>
+        </form>
+      )}
       <div className="scenario-grid">
         {scenarios.length === 0 && <div className="empty-state">생성된 시나리오가 없습니다.</div>}
         {scenarios.map((scenario) => (
@@ -1528,6 +2056,15 @@ function ScenarioWorkspace({
             </div>
             <span className="rubric-link">클릭하여 채점 루브릭 확인·수정 →</span>
             <div className="review-actions">
+              <button
+                className="danger-button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void removeScenario(scenario);
+                }}
+              >
+                삭제
+              </button>
               <button onClick={(event) => { event.stopPropagation(); void review(scenario.id, 'REJECTED'); }}>거절</button>
               <button className="approve" onClick={(event) => { event.stopPropagation(); void review(scenario.id, 'APPROVED'); }}>승인</button>
             </div>
@@ -1758,6 +2295,8 @@ function PolicyWorkspace({
   const [policies, setPolicies] = useState<Policy[]>([]);
   const [name, setName] = useState('고객상담 품질 정책');
   const [threshold, setThreshold] = useState(0.8);
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
   const [metrics, setMetrics] = useState<Metric[]>([
     { key: 'accuracy', name: '정책 정확성', description: '도메인 정책과 사실이 일치하는지 평가', weight: 0.5, required: true },
     { key: 'resolution', name: '문제 해결력', description: '다음 행동을 명확히 안내하는지 평가', weight: 0.3 },
@@ -1765,7 +2304,11 @@ function PolicyWorkspace({
   ]);
 
   useEffect(() => {
-    if (!projectId && projects[0]) setProjectId(projects[0].id);
+    setProjectId((current) =>
+      projects.some((project) => project.id === current)
+        ? current
+        : projects[0]?.id ?? '',
+    );
   }, [projectId, projects]);
 
   const load = useCallback(async () => {
@@ -1781,18 +2324,65 @@ function PolicyWorkspace({
   }
 
   const save = async () => {
-    await fetch(`${API_URL}/projects/${projectId}/policies`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, passThreshold: threshold, maxRetries: 1, metrics }),
-    });
-    await load();
+    setSaving(true);
+    setError('');
+    try {
+      const response = await fetch(`${API_URL}/projects/${projectId}/policies`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, passThreshold: threshold, maxRetries: 1, metrics }),
+      });
+      if (!response.ok) {
+        const body = (await response.json()) as { message?: string };
+        throw new Error(body.message ?? '평가 정책 저장에 실패했습니다.');
+      }
+      await load();
+    } catch (saveError) {
+      setError(
+        saveError instanceof Error
+          ? saveError.message
+          : '평가 정책 저장에 실패했습니다.',
+      );
+    } finally {
+      setSaving(false);
+    }
   };
 
   const updateMetric = (index: number, field: keyof Metric, value: string | number | boolean) => {
     setMetrics((items) => items.map((item, itemIndex) =>
       itemIndex === index ? { ...item, [field]: value } : item,
     ));
+  };
+
+  const addMetric = () => {
+    const index = metrics.length + 1;
+    setMetrics((items) => [
+      ...items,
+      {
+        key: `metric_${Date.now()}`,
+        name: `새 지표 ${index}`,
+        description: '',
+        weight: 0,
+      },
+    ]);
+  };
+
+  const removeMetric = (index: number) => {
+    setMetrics((items) => items.filter((_, itemIndex) => itemIndex !== index));
+  };
+
+  const removePolicy = async (policy: Policy) => {
+    if (!window.confirm(`"${policy.name}" 평가 정책을 삭제할까요?`)) return;
+    setError('');
+    const response = await fetch(`${API_URL}/policies/${policy.id}`, {
+      method: 'DELETE',
+    });
+    if (!response.ok) {
+      const body = (await response.json()) as { message?: string };
+      setError(body.message ?? '평가 정책 삭제에 실패했습니다.');
+      return;
+    }
+    await load();
   };
 
   return (
@@ -1821,19 +2411,43 @@ function PolicyWorkspace({
                 <input value={metric.description} onChange={(event) => updateMetric(index, 'description', event.target.value)} />
                 <input type="number" min="0" max="1" step="0.1" value={metric.weight} onChange={(event) => updateMetric(index, 'weight', Number(event.target.value))} />
                 <label className="required-check"><input type="checkbox" checked={metric.required ?? false} onChange={(event) => updateMetric(index, 'required', event.target.checked)} />필수</label>
+                <button
+                  className="danger-button"
+                  type="button"
+                  disabled={metrics.length === 1}
+                  onClick={() => removeMetric(index)}
+                >
+                  지표 삭제
+                </button>
               </div>
             ))}
           </div>
-          <button className="primary-button" onClick={() => void save()}>평가 정책 저장</button>
+          <div className="policy-form-actions">
+            <button className="secondary-button" type="button" onClick={addMetric}>
+              + 평가지표 추가
+            </button>
+            <button className="primary-button" disabled={saving} onClick={() => void save()}>
+              {saving ? '저장 중…' : '평가 정책 저장'}
+            </button>
+          </div>
+          {error && <div className="error-banner inline">{error}</div>}
         </div>
       </section>
       <section className="panel saved-policies">
         <div className="panel-heading compact"><div><p className="eyebrow">SAVED</p><h2>저장된 정책</h2></div></div>
         {policies.map((policy) => (
           <article key={policy.id}>
-            <strong>{policy.name}</strong>
-            <span>통과 {Math.round(policy.passThreshold * 100)}%</span>
-            <small>{policy.metrics.length} metrics</small>
+            <div>
+              <strong>{policy.name}</strong>
+              <span>통과 {Math.round(policy.passThreshold * 100)}%</span>
+              <small>{policy.metrics.length} metrics</small>
+            </div>
+            <button
+              className="danger-button"
+              onClick={() => void removePolicy(policy)}
+            >
+              삭제
+            </button>
           </article>
         ))}
       </section>
