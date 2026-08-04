@@ -11,17 +11,57 @@ datasource db {
   provider = "postgresql"
 }
 
+enum EvalRunExecutionMode {
+  ADAPTER
+  PROVIDED_OUTPUT
+}
+
+enum EvalRunStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  COMPLETED_WITH_ERRORS
+  FAILED
+  CANCELLED
+}
+
+enum EvalCaseEvaluationMode {
+  REFERENCE_BASED
+  RUBRIC_ONLY
+}
+
+enum EvalRunCaseStatus {
+  WAITING_FOR_EXECUTION
+  EXECUTING
+  ANSWER_COMPLETED
+  WAITING_FOR_JUDGE
+  JUDGING
+  COMPLETED
+  REVIEW_REQUIRED
+  EXECUTION_FAILED
+  JUDGE_FAILED
+  CANCELLED
+}
+
+enum JudgeJobStatus {
+  PENDING
+  CLAIMED
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
 model Project {
-  id          String             @id @default(uuid())
-  name        String
-  domain      String
-  description String?
-  context     Json?
-  createdAt   DateTime           @default(now())
-  updatedAt   DateTime           @updatedAt
-  policies    EvaluationPolicy[]
-  scenarios   Scenario[]
-  evalRuns    EvalRun[]
+  id           String             @id @default(uuid())
+  name         String
+  domain       String
+  description  String?
+  context      Json?
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+  policies     EvaluationPolicy[]
+  scenarios    Scenario[]
+  evalRuns     EvalRun[]
   applications AIApplication[]
 }
 
@@ -39,9 +79,9 @@ model EvaluationPolicy {
 }
 
 model Scenario {
-  id               String   @id @default(uuid())
+  id               String    @id @default(uuid())
   projectId        String
-  project          Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project          Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
   title            String
   category         String?
   prompt           String
@@ -49,88 +89,161 @@ model Scenario {
   expectedOutput   String?
   expectedBehavior Json?
   evaluationRubric Json?
-  riskLevel        String   @default("MEDIUM")
-  status           String   @default("DRAFT")
+  riskLevel        String    @default("MEDIUM")
+  status           String    @default("DRAFT")
   autoValidation   Json?
   rejectionReason  String?
   reviewedAt       DateTime?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 }
 
 // 평가 프로젝트/실행 단위
 model EvalRun {
-  id            String       @id @default(uuid())
-  projectId     String?
-  project       Project?     @relation(fields: [projectId], references: [id], onDelete: SetNull)
-  policyId      String?
-  policy        EvaluationPolicy? @relation(fields: [policyId], references: [id], onDelete: SetNull)
+  id             String               @id @default(uuid())
+  projectId      String?
+  project        Project?             @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  policyId       String?
+  policy         EvaluationPolicy?    @relation(fields: [policyId], references: [id], onDelete: SetNull)
+  applicationId  String?
+  application    AIApplication?       @relation(fields: [applicationId], references: [id], onDelete: SetNull)
   policySnapshot Json?
-  name          String
-  agentName     String
-  model         String
-  status        String       @default("PENDING")
-  passThreshold Float        @default(0.7)
-  maxRetries    Int          @default(1)
-  createdAt     DateTime     @default(now())
-  updatedAt     DateTime     @updatedAt
-  completedAt   DateTime?
-  results       EvalResult[]
+  name           String
+  agentName      String
+  model          String
+  judgeModel     String?
+  judgeConfig    Json?
+  executionMode  EvalRunExecutionMode @default(PROVIDED_OUTPUT)
+  status         EvalRunStatus        @default(QUEUED)
+  passThreshold  Float                @default(0.7)
+  maxRetries     Int                  @default(1)
+  totalCases     Int                  @default(0)
+  completedCases Int                  @default(0)
+  failedCases    Int                  @default(0)
+  reviewCases    Int                  @default(0)
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+  startedAt      DateTime?
+  completedAt    DateTime?
+  cases          EvalRunCase[]
+  results        EvalResult[]
+
+  @@index([applicationId, status])
+  @@index([projectId, createdAt])
+}
+
+// 데이터셋 항목 하나의 답변 생성부터 Judge 평가까지의 실행 단위
+model EvalRunCase {
+  id                 String                 @id @default(uuid())
+  evalRunId          String
+  evalRun            EvalRun                @relation(fields: [evalRunId], references: [id], onDelete: Cascade)
+  caseIndex          Int
+  externalCaseId     String?
+  evaluationMode     EvalCaseEvaluationMode
+  status             EvalRunCaseStatus      @default(WAITING_FOR_EXECUTION)
+  input              Json
+  expected           Json?
+  rubricSnapshot     Json?
+  outputAnswer       String?
+  executionMetadata  Json?
+  executionError     Json?
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
+  executionStartedAt DateTime?
+  answerCompletedAt  DateTime?
+  completedAt        DateTime?
+  sdkJob             SdkJob?
+  judgeJob           JudgeJob?
+  result             EvalResult?
+
+  @@unique([evalRunId, caseIndex])
+  @@index([evalRunId, status])
+  @@index([status, updatedAt])
 }
 
 // 개별 레코드 평가 결과
 model EvalResult {
-  id             String   @id @default(uuid())
-  evalRunId      String
-  evalRun        EvalRun  @relation(fields: [evalRunId], references: [id], onDelete: Cascade)
-  inputPrompt    String
-  outputAnswer   String
-  expectedOutput String?
-  score          Float
-  verdict        String
-  reason         String?
-  verification   Json?
-  evaluation     Json?
-  supervision    Json?
-  retryCount     Int      @default(0)
-  durationMs     Int?
-  createdAt      DateTime @default(now())
+  id                 String       @id @default(uuid())
+  evalRunId          String
+  evalRun            EvalRun      @relation(fields: [evalRunId], references: [id], onDelete: Cascade)
+  evalRunCaseId      String?      @unique
+  evalRunCase        EvalRunCase? @relation(fields: [evalRunCaseId], references: [id], onDelete: Cascade)
+  inputPrompt        String
+  outputAnswer       String
+  expectedOutput     String?
+  score              Float
+  verdict            String
+  reason             String?
+  verification       Json?
+  evaluation         Json?
+  supervision        Json?
+  judgeModel         String?
+  judgePromptVersion String?
+  judgeAttempts      Int          @default(1)
+  schemaValid        Boolean      @default(true)
+  retryCount         Int          @default(0)
+  durationMs         Int?
+  createdAt          DateTime     @default(now())
 }
 
 model AIApplication {
-  id          String   @id @default(uuid())
+  id          String    @id @default(uuid())
   projectId   String
-  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project     Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
   name        String
-  environment String   @default("development")
-  sdkKeyHash  String   @unique
-  active      Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  environment String    @default("development")
+  sdkKeyHash  String    @unique
+  active      Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
   jobs        SdkJob[]
+  evalRuns    EvalRun[]
 
   @@index([projectId])
 }
 
 model SdkJob {
-  id              String        @id @default(uuid())
-  applicationId   String
-  application     AIApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
-  testCase        Json
-  status          String        @default("PENDING")
-  attempt         Int           @default(0)
-  maxAttempts     Int           @default(3)
-  timeoutMs       Int           @default(30000)
-  leaseId         String?
-  leaseExpiresAt  DateTime?
-  idempotencyKey  String?       @unique
-  output          Json?
-  error           Json?
-  startedAt       DateTime?
-  completedAt     DateTime?
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  id             String        @id @default(uuid())
+  applicationId  String
+  application    AIApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  evalRunCaseId  String?       @unique
+  evalRunCase    EvalRunCase?  @relation(fields: [evalRunCaseId], references: [id], onDelete: Cascade)
+  testCase       Json
+  status         String        @default("PENDING")
+  attempt        Int           @default(0)
+  maxAttempts    Int           @default(3)
+  timeoutMs      Int           @default(30000)
+  leaseId        String?
+  leaseExpiresAt DateTime?
+  idempotencyKey String?       @unique
+  output         Json?
+  error          Json?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
 
   @@index([applicationId, status, createdAt])
+  @@index([leaseExpiresAt])
+}
+
+// 답변 수집과 분리해 로컬 LLM Judge를 비동기로 실행하는 작업
+model JudgeJob {
+  id             String         @id @default(uuid())
+  evalRunCaseId  String         @unique
+  evalRunCase    EvalRunCase    @relation(fields: [evalRunCaseId], references: [id], onDelete: Cascade)
+  status         JudgeJobStatus @default(PENDING)
+  attempt        Int            @default(0)
+  maxAttempts    Int            @default(3)
+  availableAt    DateTime       @default(now())
+  leaseId        String?
+  leaseExpiresAt DateTime?
+  error          Json?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@index([status, availableAt])
   @@index([leaseExpiresAt])
 }

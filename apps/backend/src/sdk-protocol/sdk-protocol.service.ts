@@ -91,6 +91,32 @@ export class SdkProtocolService {
     });
   }
 
+  async deleteApplication(applicationId: string) {
+    const application = await this.prisma.aIApplication.findUnique({
+      where: { id: applicationId },
+      select: { id: true },
+    });
+    if (!application) {
+      throw new NotFoundException('AI application not found');
+    }
+    const activeJobs = await this.prisma.sdkJob.count({
+      where: {
+        applicationId,
+        status: { in: ['PENDING', 'CLAIMED', 'RUNNING'] },
+        evalRunCaseId: { not: null },
+      },
+    });
+    if (activeJobs > 0) {
+      throw new ConflictException(
+        'An application with active evaluation jobs cannot be deleted',
+      );
+    }
+    await this.prisma.aIApplication.delete({
+      where: { id: applicationId },
+    });
+    return { id: applicationId, deleted: true };
+  }
+
   async createJob(applicationId: string, input: CreateJobInput) {
     if (!input?.testCase || typeof input.testCase !== 'object') {
       throw new BadRequestException('testCase is required');
@@ -166,6 +192,14 @@ export class SdkProtocolService {
     const now = new Date();
 
     return this.prisma.$transaction(async (transaction) => {
+      const expiredJobs = await transaction.sdkJob.findMany({
+        where: {
+          applicationId: application.id,
+          status: { in: ['CLAIMED', 'RUNNING'] },
+          leaseExpiresAt: { lt: now },
+        },
+        select: { evalRunCaseId: true },
+      });
       await transaction.sdkJob.updateMany({
         where: {
           applicationId: application.id,
@@ -179,6 +213,18 @@ export class SdkProtocolService {
           startedAt: null,
         },
       });
+      const expiredCaseIds = expiredJobs.flatMap((job) =>
+        job.evalRunCaseId ? [job.evalRunCaseId] : [],
+      );
+      if (expiredCaseIds.length > 0) {
+        await transaction.evalRunCase.updateMany({
+          where: { id: { in: expiredCaseIds } },
+          data: {
+            status: 'WAITING_FOR_EXECUTION',
+            executionStartedAt: null,
+          },
+        });
+      }
 
       let candidate: SdkJob | null = null;
       while (!candidate) {
@@ -205,6 +251,26 @@ export class SdkProtocolService {
               },
             },
           });
+          if (next.evalRunCaseId) {
+            const failedCase = await transaction.evalRunCase.update({
+              where: { id: next.evalRunCaseId },
+              data: {
+                status: 'EXECUTION_FAILED',
+                executionError: {
+                  code: 'MAX_ATTEMPTS_EXCEEDED',
+                  message: 'Maximum execution attempts exceeded',
+                  retryable: false,
+                },
+                completedAt: now,
+              },
+              select: { evalRunId: true },
+            });
+            await this.refreshExecutionFailureSummary(
+              transaction,
+              failedCase.evalRunId,
+              now,
+            );
+          }
           continue;
         }
         candidate = next;
@@ -248,10 +314,29 @@ export class SdkProtocolService {
     if (job.status !== 'CLAIMED') {
       throw new ConflictException(`job cannot start from ${job.status}`);
     }
-    return this.prisma.sdkJob.update({
-      where: { id: job.id },
-      data: { status: 'RUNNING', startedAt: new Date() },
-      select: { id: true, status: true, startedAt: true },
+    const startedAt = new Date();
+    return this.prisma.$transaction(async (transaction) => {
+      const started = await transaction.sdkJob.update({
+        where: { id: job.id },
+        data: { status: 'RUNNING', startedAt },
+        select: { id: true, status: true, startedAt: true },
+      });
+      if (job.evalRunCaseId) {
+        const runCase = await transaction.evalRunCase.update({
+          where: { id: job.evalRunCaseId },
+          data: {
+            status: 'EXECUTING',
+            executionStartedAt: startedAt,
+            executionError: Prisma.DbNull,
+          },
+          select: { evalRunId: true },
+        });
+        await transaction.evalRun.updateMany({
+          where: { id: runCase.evalRunId, status: 'QUEUED' },
+          data: { status: 'RUNNING', startedAt },
+        });
+      }
+      return started;
     });
   }
 
@@ -285,20 +370,55 @@ export class SdkProtocolService {
       throw new ConflictException(`job cannot complete from ${job.status}`);
     }
 
-    return this.prisma.sdkJob.update({
-      where: { id: job.id },
-      data: {
-        status: 'COMPLETED',
-        idempotencyKey,
-        output: {
-          text: input.output,
-          metadata: input.metadata ?? {},
-        } as Prisma.InputJsonValue,
-        completedAt: new Date(),
-        leaseId: null,
-        leaseExpiresAt: null,
-      },
-      select: { id: true, status: true, completedAt: true },
+    const completedAt = new Date();
+    return this.prisma.$transaction(async (transaction) => {
+      const completed = await transaction.sdkJob.update({
+        where: { id: job.id },
+        data: {
+          status: 'COMPLETED',
+          idempotencyKey,
+          output: {
+            text: input.output,
+            metadata: input.metadata ?? {},
+          } as Prisma.InputJsonValue,
+          completedAt,
+          leaseId: null,
+          leaseExpiresAt: null,
+        },
+        select: { id: true, status: true, completedAt: true },
+      });
+
+      if (job.evalRunCaseId) {
+        const runCase = await transaction.evalRunCase.update({
+          where: { id: job.evalRunCaseId },
+          data: {
+            status: 'WAITING_FOR_JUDGE',
+            outputAnswer: input.output,
+            executionMetadata: (input.metadata ??
+              {}) as Prisma.InputJsonValue,
+            executionError: Prisma.DbNull,
+            answerCompletedAt: completedAt,
+          },
+          select: {
+            evalRun: {
+              select: { maxRetries: true },
+            },
+          },
+        });
+        await transaction.judgeJob.upsert({
+          where: { evalRunCaseId: job.evalRunCaseId },
+          update: {},
+          create: {
+            evalRunCaseId: job.evalRunCaseId,
+            maxAttempts: Math.min(
+              Math.max(runCase.evalRun.maxRetries + 1, 1),
+              3,
+            ),
+          },
+        });
+      }
+
+      return completed;
     });
   }
 
@@ -314,23 +434,50 @@ export class SdkProtocolService {
 
     const shouldRetry =
       input.error.retryable === true && job.attempt < job.maxAttempts;
-    return this.prisma.sdkJob.update({
-      where: { id: job.id },
-      data: {
-        status: shouldRetry ? 'PENDING' : 'FAILED',
-        error: input.error as Prisma.InputJsonValue,
-        completedAt: shouldRetry ? null : new Date(),
-        startedAt: shouldRetry ? null : job.startedAt,
-        leaseId: null,
-        leaseExpiresAt: null,
-      },
-      select: {
-        id: true,
-        status: true,
-        attempt: true,
-        maxAttempts: true,
-        completedAt: true,
-      },
+    const failedAt = new Date();
+    return this.prisma.$transaction(async (transaction) => {
+      const failed = await transaction.sdkJob.update({
+        where: { id: job.id },
+        data: {
+          status: shouldRetry ? 'PENDING' : 'FAILED',
+          error: input.error as Prisma.InputJsonValue,
+          completedAt: shouldRetry ? null : failedAt,
+          startedAt: shouldRetry ? null : job.startedAt,
+          leaseId: null,
+          leaseExpiresAt: null,
+        },
+        select: {
+          id: true,
+          status: true,
+          attempt: true,
+          maxAttempts: true,
+          completedAt: true,
+        },
+      });
+
+      if (job.evalRunCaseId) {
+        const runCase = await transaction.evalRunCase.update({
+          where: { id: job.evalRunCaseId },
+          data: {
+            status: shouldRetry
+              ? 'WAITING_FOR_EXECUTION'
+              : 'EXECUTION_FAILED',
+            executionError: input.error as Prisma.InputJsonValue,
+            executionStartedAt: shouldRetry ? null : undefined,
+            completedAt: shouldRetry ? null : failedAt,
+          },
+          select: { evalRunId: true },
+        });
+        if (!shouldRetry) {
+          await this.refreshExecutionFailureSummary(
+            transaction,
+            runCase.evalRunId,
+            failedAt,
+          );
+        }
+      }
+
+      return failed;
     });
   }
 
@@ -384,6 +531,31 @@ export class SdkProtocolService {
 
   private hashKey(value: string) {
     return createHash('sha256').update(value).digest('hex');
+  }
+
+  private async refreshExecutionFailureSummary(
+    transaction: Prisma.TransactionClient,
+    evalRunId: string,
+    completedAt: Date,
+  ) {
+    const [totalCases, failedCases] = await Promise.all([
+      transaction.evalRunCase.count({ where: { evalRunId } }),
+      transaction.evalRunCase.count({
+        where: { evalRunId, status: 'EXECUTION_FAILED' },
+      }),
+    ]);
+    await transaction.evalRun.update({
+      where: { id: evalRunId },
+      data: {
+        failedCases,
+        status:
+          totalCases > 0 && failedCases === totalCases
+            ? 'FAILED'
+            : 'RUNNING',
+        completedAt:
+          totalCases > 0 && failedCases === totalCases ? completedAt : null,
+      },
+    });
   }
 
   private readonly applicationSelect = {
