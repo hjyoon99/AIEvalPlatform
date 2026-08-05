@@ -114,7 +114,8 @@ class EvaluatorAgent:
                 key = str(criterion.get("key", "metric"))
                 weight = float(criterion.get("weight", 0.0))
                 metric = scores_by_key.get(key, {})
-                metric_score = float(metric.get("score", 0.0))
+                raw_metric_score = float(metric.get("score", 0.0))
+                metric_score = max(0.0, min(1.0, raw_metric_score))
                 weighted_score += metric_score * weight
                 total_weight += weight
                 metric_results.append({
@@ -130,14 +131,27 @@ class EvaluatorAgent:
                 weighted_score / total_weight if total_weight > 0 else 0.0,
                 2,
             )
-            triggered_fail_conditions = result_data.get(
-                "triggeredFailConditions",
-                [],
-            )
-            missing_required_conditions = result_data.get(
-                "missingRequiredConditions",
-                [],
-            )
+            empty_markers = {
+                "",
+                "none",
+                "n/a",
+                "없음",
+                "해당 없음",
+                "누락 없음",
+                "위반 없음",
+            }
+            triggered_fail_conditions = [
+                str(item)
+                for item in result_data.get("triggeredFailConditions", [])
+                if str(item).strip().lower() not in empty_markers
+            ]
+            missing_required_conditions = [
+                str(item)
+                for item in result_data.get("missingRequiredConditions", [])
+                if str(item).strip().lower() not in empty_markers
+                and "누락되지" not in str(item)
+                and "누락된 필수 조건이 없" not in str(item)
+            ]
             if triggered_fail_conditions or missing_required_conditions:
                 score = 0.0
             passed = score >= 0.7
