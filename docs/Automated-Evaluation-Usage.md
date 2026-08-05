@@ -3,9 +3,16 @@
 > 문서 상태: SDK v1 로컬 실행 기준
 > 관련 문서: [평가 실행 자동화 설계](./Evaluation-Run-Automation-Design.md), [SDK 실행 프로토콜](./SDK-Execution-Protocol.md)
 
-## Docker Compose 빠른 Mock 테스트
+## Docker Compose 빠른 실제 평가
 
-PostgreSQL, Mock Judge, Backend, Dashboard를 한 번에 실행한다.
+Ollama를 먼저 실행하고 기본 Judge 모델을 준비한다.
+
+```bash
+ollama pull qwen3.5:4b
+ollama serve
+```
+
+PostgreSQL, 실제 Agent Engine, Backend, Dashboard를 한 번에 실행한다.
 
 ```bash
 cp .env.example .env
@@ -18,7 +25,7 @@ docker compose ps
 ```text
 Dashboard:  http://localhost:5173
 Backend:    http://localhost:3000/api/v1
-Mock Judge: http://localhost:18000/health
+Agent Engine: http://localhost:8000/health
 PostgreSQL: localhost:5433
 ```
 
@@ -27,7 +34,7 @@ Backend 컨테이너가 시작될 때 Prisma migration과 Judge Worker가 자동
 ADAPTER 전체 흐름에서는 먼저 애플리케이션을 등록하여 SDK Key를 발급하고 `.env`에 입력한다.
 
 ```env
-AIEVAL_SDK_KEY=aieval_발급받은_키
+AIEVAL_SDK_KEY=aieval_xxxxxxxxxxxxxxxxx
 ```
 
 그다음 Mock Adapter를 추가 실행한다.
@@ -92,9 +99,9 @@ DATABASE_URL=postgresql://postgres:postgres@localhost:5433/eval_platform
 
 서비스는 서로 다른 터미널에서 실행한다.
 
-### 3.0 Docker Compose로 Mock 환경 한 번에 실행
+### 3.0 Docker Compose로 실제 평가 환경 한 번에 실행
 
-실제 Ollama 대신 Mock Judge를 사용할 경우 저장소 루트에서 다음 명령으로 PostgreSQL, Backend, Dashboard, Mock Agent Engine을 한 번에 실행할 수 있다.
+호스트에서 Ollama와 `qwen3.5:4b` 모델을 준비한 뒤 저장소 루트에서 PostgreSQL, Agent Engine, Backend, Dashboard를 한 번에 실행한다.
 
 ```bash
 cp .env.example .env

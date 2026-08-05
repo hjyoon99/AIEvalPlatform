@@ -50,7 +50,14 @@
    - 대시보드에서 Application 등록 및 SDK Key 발급
    - 고객 프로젝트의 Adapter 디렉터리와 파일 구성
    - Chat/RAG/세션/도구 호출 API 매핑과 전체 평가 실행
-12. [대시보드 리소스 추가·삭제 가이드](./Dashboard-Resource-Management.md)
+12. [TGZ SDK 고객사 설치 및 연동 가이드](./Customer-SDK-TGZ-Setup-Guide.md)
+   - 전달받은 `.tgz` 검증과 로컬 npm 설치
+   - Adapter 환경변수, 고객 AI 매핑, 실행 및 문제 해결
+13. [Python 고객사 Sidecar 설치 가이드](./Python-Customer-Sidecar-Setup-Guide.md)
+   - Node.js SDK와 Python AI를 분리한 Sidecar 구성
+   - 로컬, Docker Compose 및 Kubernetes 동일 Pod 배포
+   - Secret, 네트워크, timeout, 확장 및 버전 업그레이드
+14. [대시보드 리소스 추가·삭제 가이드](./Dashboard-Resource-Management.md)
    - 프로젝트, 평가 실행, 시나리오, 정책, 어댑터 관리
    - 삭제 영향 범위와 MVP의 권한·복구 제한
 
