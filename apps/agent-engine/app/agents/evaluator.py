@@ -48,9 +48,10 @@ class EvaluatorAgent:
         expected_output: Optional[str] = None,
         supervisor_feedback: Optional[str] = None,
         criteria: Optional[List[Dict[str, Any]]] = None,
+        system_prompt: Optional[str] = None,
     ) -> Dict[str, Any]:
         
-        judge_system_prompt = (
+        judge_system_prompt = system_prompt or (
             "당신은 AI 에이전트 답변의 품질을 채점하는 엄격한 평가자(LLM-as-a-Judge)입니다.\n"
             "제공된 프롬프트와 에이전트의 출력(Output)을 심사하여 평가 점수를 내리세요."
         )

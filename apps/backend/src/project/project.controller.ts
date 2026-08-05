@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import { ProjectService } from './project.service';
 import type {
+  AgentPromptsInput,
   CreatePolicyInput,
   CreateProjectInput,
   CreateScenarioInput,
@@ -29,6 +30,19 @@ export class ProjectController {
   @Get('projects')
   getProjects() {
     return this.projectService.getProjects();
+  }
+
+  @Get('projects/:projectId/agent-prompts')
+  getAgentPrompts(@Param('projectId') projectId: string) {
+    return this.projectService.getAgentPrompts(projectId);
+  }
+
+  @Patch('projects/:projectId/agent-prompts')
+  updateAgentPrompts(
+    @Param('projectId') projectId: string,
+    @Body() input: AgentPromptsInput,
+  ) {
+    return this.projectService.updateAgentPrompts(projectId, input);
   }
 
   @Delete('projects/:projectId')

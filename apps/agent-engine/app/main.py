@@ -44,6 +44,12 @@ class EvalDatasetItem(BaseModel):
     criteria: Optional[List[Dict[str, Any]]] = None
 
 
+class AgentPrompts(BaseModel):
+    verifier: Optional[str] = None
+    evaluator: Optional[str] = None
+    supervisor: Optional[str] = None
+
+
 class EvalRequest(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
@@ -76,6 +82,7 @@ class EvalRequest(BaseModel):
     passThreshold: float = Field(default=0.7, ge=0.0, le=1.0)
     criteria: List[Dict[str, Any]] = Field(default_factory=list)
     metadata: Optional[Dict[str, Any]] = None
+    agentPrompts: Optional[AgentPrompts] = None
     dataset: Optional[List[EvalDatasetItem]] = None
 
 
@@ -122,6 +129,11 @@ async def run_evaluation_pipeline(request: EvalRequest):
             max_retries=request.maxRetries,
             pass_threshold=request.passThreshold,
             criteria=item.criteria or request.criteria,
+            agent_prompts=(
+                request.agentPrompts.model_dump(exclude_none=True)
+                if request.agentPrompts
+                else {}
+            ),
         )
 
         verification = graph_result["verification"]

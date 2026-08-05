@@ -71,6 +71,7 @@ export class EvalService {
     if (input.policyId && !policy) {
       throw new BadRequestException('Evaluation policy not found');
     }
+    const agentPrompts = await this.getProjectAgentPrompts(input.projectId);
 
     let dataset = input.dataset;
     if ((!dataset || dataset.length === 0) && input.scenarioIds?.length) {
@@ -146,6 +147,7 @@ export class EvalService {
         agentName: input.agentName!.trim(),
         model: input.model ?? 'qwen3.5:4b',
         judgeModel: input.model ?? 'qwen3.5:4b',
+        judgeConfig: agentPrompts ? { agentPrompts } : undefined,
         passThreshold: input.passThreshold ?? policy?.passThreshold ?? 0.7,
         maxRetries: input.maxRetries ?? policy?.maxRetries ?? 1,
         status: 'RUNNING',
@@ -166,6 +168,7 @@ export class EvalService {
             model: run.model,
             maxRetries: run.maxRetries,
             passThreshold: run.passThreshold,
+            agentPrompts,
             criteria: policy?.metrics ?? [],
             dataset,
           }),
@@ -389,6 +392,7 @@ export class EvalService {
     }
 
     const judgeModel = input.judgeModel ?? input.model ?? 'qwen3.5:4b';
+    const agentPrompts = await this.getProjectAgentPrompts(projectId);
     const timeoutMs = input.timeoutMs ?? 30_000;
     const sdkMaxAttempts = input.maxAttempts ?? 3;
     const judgeMaxAttempts = Math.min(
@@ -415,6 +419,7 @@ export class EvalService {
             input.agentName?.trim() ?? application?.name ?? 'provided-output',
           model: judgeModel,
           judgeModel,
+          judgeConfig: agentPrompts ? { agentPrompts } : undefined,
           executionMode,
           status: 'QUEUED',
           passThreshold: input.passThreshold ?? policy?.passThreshold ?? 0.7,
@@ -564,6 +569,27 @@ export class EvalService {
       );
     }
     this.validateSharedSettings(input);
+  }
+
+  private async getProjectAgentPrompts(projectId?: string) {
+    if (!projectId) return undefined;
+    const project = await this.prisma.project.findUnique({
+      where: { id: projectId },
+      select: { agentPrompts: true },
+    });
+    const value = project?.agentPrompts;
+    if (!value || Array.isArray(value) || typeof value !== 'object') {
+      return undefined;
+    }
+    const prompts = Object.fromEntries(
+      Object.entries(value).filter(
+        ([key, prompt]) =>
+          ['verifier', 'evaluator', 'supervisor'].includes(key) &&
+          typeof prompt === 'string' &&
+          prompt.trim(),
+      ),
+    );
+    return Object.keys(prompts).length > 0 ? prompts : undefined;
   }
 
   private validateLegacyInput(

@@ -17,6 +17,7 @@ class EvaluationState(TypedDict, total=False):
     max_retries: int
     pass_threshold: float
     criteria: List[Dict[str, Any]]
+    agent_prompts: Dict[str, str]
 
 
 class EvaluationWorkflow:
@@ -56,6 +57,7 @@ class EvaluationWorkflow:
         verification = await self.verifier.run(
             prompt=state["prompt"],
             output=state["output"],
+            system_prompt=state.get("agent_prompts", {}).get("verifier"),
         )
         return {"verification": verification}
 
@@ -66,6 +68,7 @@ class EvaluationWorkflow:
             expected_output=state.get("expected_output"),
             supervisor_feedback=state.get("supervisor_feedback"),
             criteria=state.get("criteria"),
+            system_prompt=state.get("agent_prompts", {}).get("evaluator"),
         )
         return {"evaluation": evaluation}
 
@@ -80,6 +83,7 @@ class EvaluationWorkflow:
             pass_threshold=state.get("pass_threshold", 0.7),
             retry_count=retry_count,
             max_retries=state.get("max_retries", 1),
+            system_prompt=state.get("agent_prompts", {}).get("supervisor"),
         )
 
         result: Dict[str, Any] = {"supervision": supervision}
@@ -106,6 +110,7 @@ class EvaluationWorkflow:
         max_retries: int = 1,
         pass_threshold: float = 0.7,
         criteria: Optional[List[Dict[str, Any]]] = None,
+        agent_prompts: Optional[Dict[str, str]] = None,
     ) -> EvaluationState:
         return await self.graph.ainvoke(
             {
@@ -116,5 +121,6 @@ class EvaluationWorkflow:
                 "max_retries": max_retries,
                 "pass_threshold": pass_threshold,
                 "criteria": criteria or [],
+                "agent_prompts": agent_prompts or {},
             }
         )

@@ -57,6 +57,7 @@ model Project {
   domain       String
   description  String?
   context      Json?
+  agentPrompts Json?
   createdAt    DateTime           @default(now())
   updatedAt    DateTime           @updatedAt
   policies     EvaluationPolicy[]

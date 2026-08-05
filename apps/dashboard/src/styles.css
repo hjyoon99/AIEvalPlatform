@@ -1305,6 +1305,45 @@ select:focus {
   grid-column: 1 / -1;
 }
 
+.agent-prompts-panel {
+  grid-column: 1 / -1;
+}
+
+.agent-prompt-editor {
+  display: grid;
+  gap: 16px;
+  padding-top: 20px;
+}
+
+.agent-prompt-editor > label {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.3fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.agent-prompt-editor label > span {
+  display: grid;
+  gap: 5px;
+}
+
+.agent-prompt-editor small,
+.save-confirmation {
+  color: #8d95a4;
+  font-size: 10px;
+}
+
+.agent-prompt-editor textarea {
+  min-height: 150px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  line-height: 1.55;
+}
+
+.agent-prompt-editor .policy-form-actions {
+  justify-content: flex-end;
+  align-items: center;
+}
+
 .adapter-layout {
   display: grid;
   grid-template-columns: minmax(0, 1.5fr) minmax(340px, 0.65fr);
@@ -1608,6 +1647,10 @@ select:focus {
   .project-manager-wide,
   .manual-scenario-wide {
     grid-column: auto;
+  }
+
+  .agent-prompt-editor > label {
+    grid-template-columns: 1fr;
   }
 
   .adapter-job-form .adapter-wide,

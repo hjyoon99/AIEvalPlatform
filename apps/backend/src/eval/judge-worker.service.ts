@@ -205,6 +205,10 @@ export class JudgeWorkerService implements OnModuleInit, OnModuleDestroy {
     const input = this.asRecord(runCase.input);
     const expected = this.asRecord(runCase.expected);
     const rubric = this.asRecord(runCase.rubricSnapshot);
+    const judgeConfig = this.asRecord(runCase.evalRun.judgeConfig);
+    const agentPrompts = this.asRecord(
+      judgeConfig.agentPrompts as Prisma.JsonValue,
+    );
     const prompt = typeof input.prompt === 'string' ? input.prompt : '';
     if (!prompt.trim()) {
       throw {
@@ -223,6 +227,7 @@ export class JudgeWorkerService implements OnModuleInit, OnModuleDestroy {
         model: runCase.evalRun.judgeModel ?? runCase.evalRun.model,
         maxRetries: runCase.evalRun.maxRetries,
         passThreshold: runCase.evalRun.passThreshold,
+        agentPrompts,
         metadata: {
           evalRunCaseId: runCase.id,
           evaluationMode: runCase.evaluationMode,

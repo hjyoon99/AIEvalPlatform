@@ -105,6 +105,12 @@ type Policy = {
   metrics: Metric[];
 };
 
+type AgentPrompts = {
+  verifier: string;
+  evaluator: string;
+  supervisor: string;
+};
+
 type Scenario = {
   id: string;
   title: string;
@@ -1419,7 +1425,7 @@ function AdapterWorkspace({
           projectId,
           applicationId,
           executionMode: 'ADAPTER',
-          judgeModel: 'mock-judge',
+          judgeModel: 'qwen3.5:4b',
           timeoutMs,
           maxAttempts: 3,
           dataset: [
@@ -1655,7 +1661,7 @@ await adapter.start();`}</code>
             <p className="eyebrow">STEP 4</p>
             <h3>전체 평가 실행</h3>
             <p className="section-description">
-              위 Prompt와 Variables로 고객 AI 답변을 생성하고 Mock Judge의
+              위 Prompt와 Variables로 고객 AI 답변을 생성하고 실제 Judge의
               다차원 평가까지 실행합니다.
             </p>
           </div>
@@ -1794,6 +1800,8 @@ function ScenarioWorkspace({
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
   const [policies, setPolicies] = useState<Policy[]>([]);
   const [policyId, setPolicyId] = useState('');
+  const [applications, setApplications] = useState<AIApplication[]>([]);
+  const [applicationId, setApplicationId] = useState('');
   const [count, setCount] = useState(3);
   const [loading, setLoading] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -1816,14 +1824,30 @@ function ScenarioWorkspace({
 
   const load = useCallback(async () => {
     if (!projectId) return;
-    const [scenarioResponse, policyResponse] = await Promise.all([
-      fetch(`${API_URL}/projects/${projectId}/scenarios`),
-      fetch(`${API_URL}/projects/${projectId}/policies`),
-    ]);
+    const [scenarioResponse, policyResponse, applicationResponse] =
+      await Promise.all([
+        fetch(`${API_URL}/projects/${projectId}/scenarios`),
+        fetch(`${API_URL}/projects/${projectId}/policies`),
+        fetch(`${API_URL}/projects/${projectId}/applications`),
+      ]);
     setScenarios((await scenarioResponse.json()) as Scenario[]);
     const nextPolicies = (await policyResponse.json()) as Policy[];
+    const nextApplications =
+      (await applicationResponse.json()) as AIApplication[];
     setPolicies(nextPolicies);
-    setPolicyId((current) => current || nextPolicies[0]?.id || '');
+    setApplications(nextApplications);
+    setPolicyId((current) =>
+      nextPolicies.some((policy) => policy.id === current)
+        ? current
+        : nextPolicies[0]?.id ?? '',
+    );
+    setApplicationId((current) =>
+      nextApplications.some(
+        (application) => application.id === current && application.active,
+      )
+        ? current
+        : nextApplications.find((application) => application.active)?.id ?? '',
+    );
   }, [projectId]);
 
   useEffect(() => {
@@ -1909,6 +1933,10 @@ function ScenarioWorkspace({
   };
 
   const runApprovedScenarios = async () => {
+    if (!applicationId) {
+      setError('테스트할 평가 어댑터를 먼저 등록하거나 선택해주세요.');
+      return;
+    }
     const approvedIds = scenarios
       .filter((scenario) => scenario.status === 'APPROVED')
       .map((scenario) => scenario.id);
@@ -1927,7 +1955,11 @@ function ScenarioWorkspace({
           projectId,
           policyId: policyId || undefined,
           scenarioIds: approvedIds,
-          agentName: 'scenario-test-agent',
+          applicationId,
+          executionMode: 'ADAPTER',
+          agentName:
+            applications.find((application) => application.id === applicationId)
+              ?.name ?? 'customer-adapter',
           model: 'qwen3.5:4b',
         }),
       });
@@ -1970,6 +2002,19 @@ function ScenarioWorkspace({
               <option key={policy.id} value={policy.id}>{policy.name}</option>
             ))}
           </select>
+          <select
+            value={applicationId}
+            onChange={(event) => setApplicationId(event.target.value)}
+          >
+            <option value="">평가 어댑터 선택</option>
+            {applications
+              .filter((application) => application.active)
+              .map((application) => (
+                <option key={application.id} value={application.id}>
+                  {application.name} · {application.environment}
+                </option>
+              ))}
+          </select>
           <input
             type="number"
             min="1"
@@ -1989,7 +2034,7 @@ function ScenarioWorkspace({
           <button
             className="primary-button inline"
             onClick={() => void runApprovedScenarios()}
-            disabled={testing}
+            disabled={testing || !applicationId}
           >
             {testing ? '품질 테스트 중…' : '승인 시나리오 테스트'}
           </button>
@@ -2297,6 +2342,13 @@ function PolicyWorkspace({
   const [threshold, setThreshold] = useState(0.8);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [promptSaving, setPromptSaving] = useState(false);
+  const [promptSaved, setPromptSaved] = useState(false);
+  const [agentPrompts, setAgentPrompts] = useState<AgentPrompts>({
+    verifier: '',
+    evaluator: '',
+    supervisor: '',
+  });
   const [metrics, setMetrics] = useState<Metric[]>([
     { key: 'accuracy', name: '정책 정확성', description: '도메인 정책과 사실이 일치하는지 평가', weight: 0.5, required: true },
     { key: 'resolution', name: '문제 해결력', description: '다음 행동을 명확히 안내하는지 평가', weight: 0.3 },
@@ -2313,8 +2365,15 @@ function PolicyWorkspace({
 
   const load = useCallback(async () => {
     if (!projectId) return;
-    const response = await fetch(`${API_URL}/projects/${projectId}/policies`);
-    setPolicies((await response.json()) as Policy[]);
+    const [policyResponse, promptResponse] = await Promise.all([
+      fetch(`${API_URL}/projects/${projectId}/policies`),
+      fetch(`${API_URL}/projects/${projectId}/agent-prompts`),
+    ]);
+    setPolicies((await policyResponse.json()) as Policy[]);
+    if (promptResponse.ok) {
+      setAgentPrompts((await promptResponse.json()) as AgentPrompts);
+    }
+    setPromptSaved(false);
   }, [projectId]);
 
   useEffect(() => { void load(); }, [load]);
@@ -2385,6 +2444,36 @@ function PolicyWorkspace({
     await load();
   };
 
+  const saveAgentPrompts = async () => {
+    setPromptSaving(true);
+    setPromptSaved(false);
+    setError('');
+    try {
+      const response = await fetch(
+        `${API_URL}/projects/${projectId}/agent-prompts`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(agentPrompts),
+        },
+      );
+      if (!response.ok) {
+        const body = (await response.json()) as { message?: string };
+        throw new Error(body.message ?? '에이전트 프롬프트 저장에 실패했습니다.');
+      }
+      setAgentPrompts((await response.json()) as AgentPrompts);
+      setPromptSaved(true);
+    } catch (promptError) {
+      setError(
+        promptError instanceof Error
+          ? promptError.message
+          : '에이전트 프롬프트 저장에 실패했습니다.',
+      );
+    } finally {
+      setPromptSaving(false);
+    }
+  };
+
   return (
     <div className="policy-layout">
       <section className="panel workspace-section">
@@ -2450,6 +2539,59 @@ function PolicyWorkspace({
             </button>
           </article>
         ))}
+      </section>
+      <section className="panel workspace-section agent-prompts-panel">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">JUDGE AGENTS</p>
+            <h2>에이전트 시스템 프롬프트</h2>
+            <p className="section-description">
+              선택한 프로젝트의 평가 관점과 역할을 에이전트별로 설정합니다.
+              새 평가 실행부터 저장된 프롬프트가 적용됩니다.
+            </p>
+          </div>
+        </div>
+        <div className="agent-prompt-editor">
+          {(
+            [
+              ['verifier', 'Verifier', '응답 유효성·안전성 사전 검증'],
+              ['evaluator', 'Evaluator', '평가 지표별 품질 채점'],
+              ['supervisor', 'Supervisor', '최종 PASS·FAIL·RETRY 판정'],
+            ] as const
+          ).map(([key, name, description]) => (
+            <label key={key}>
+              <span>
+                <strong>{name}</strong>
+                <small>{description}</small>
+              </span>
+              <textarea
+                value={agentPrompts[key]}
+                onChange={(event) => {
+                  setPromptSaved(false);
+                  setAgentPrompts((current) => ({
+                    ...current,
+                    [key]: event.target.value,
+                  }));
+                }}
+                rows={7}
+                required
+              />
+            </label>
+          ))}
+          <div className="policy-form-actions">
+            {promptSaved && <span className="save-confirmation">저장됨</span>}
+            <button
+              className="primary-button"
+              disabled={
+                promptSaving ||
+                Object.values(agentPrompts).some((prompt) => !prompt.trim())
+              }
+              onClick={() => void saveAgentPrompts()}
+            >
+              {promptSaving ? '저장 중…' : '시스템 프롬프트 저장'}
+            </button>
+          </div>
+        </div>
       </section>
     </div>
   );

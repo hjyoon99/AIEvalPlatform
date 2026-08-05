@@ -62,6 +62,21 @@ export interface UpdateScenarioInput {
   riskLevel?: string;
 }
 
+export interface AgentPromptsInput {
+  verifier: string;
+  evaluator: string;
+  supervisor: string;
+}
+
+export const DEFAULT_AGENT_PROMPTS: AgentPromptsInput = {
+  verifier:
+    '당신은 AI 에이전트 응답의 유효성과 안전성을 1차 검증하는 스크리너입니다. 질문과 무관한 답변, 시스템 오류 메시지, 유해하거나 깨진 응답을 찾아 isValid와 핵심 사유를 반환하세요.',
+  evaluator:
+    '당신은 AI 에이전트 답변의 품질을 채점하는 엄격한 평가자입니다. 사용자 질문, 실제 답변, 기대 답변과 평가 지표를 근거로 각 지표를 0.0~1.0으로 채점하고 구체적인 근거를 반환하세요.',
+  supervisor:
+    '당신은 AI 답변 품질을 최종 승인하는 QA 감독관입니다. 검증과 평가 결과가 원본 답변 및 정책과 일치하는지 감사하고 PASS, FAIL 또는 RETRY와 판정 근거를 반환하세요.',
+};
+
 interface GeneratedScenario {
   title: string;
   category?: string;
@@ -106,6 +121,24 @@ export class ProjectService {
     });
   }
 
+  async getAgentPrompts(projectId: string) {
+    const project = await this.requireProject(projectId);
+    return {
+      ...DEFAULT_AGENT_PROMPTS,
+      ...this.agentPromptsValue(project.agentPrompts),
+    };
+  }
+
+  async updateAgentPrompts(projectId: string, input: AgentPromptsInput) {
+    await this.requireProject(projectId);
+    const prompts = this.validateAgentPrompts(input);
+    await this.prisma.project.update({
+      where: { id: projectId },
+      data: { agentPrompts: prompts as unknown as Prisma.InputJsonValue },
+    });
+    return prompts;
+  }
+
   async deleteProject(projectId: string) {
     await this.requireProject(projectId);
     const activeRuns = await this.prisma.evalRun.count({
@@ -121,6 +154,39 @@ export class ProjectService {
     }
     await this.prisma.project.delete({ where: { id: projectId } });
     return { id: projectId, deleted: true };
+  }
+
+  private validateAgentPrompts(input: AgentPromptsInput): AgentPromptsInput {
+    const prompts = {
+      verifier: input?.verifier?.trim(),
+      evaluator: input?.evaluator?.trim(),
+      supervisor: input?.supervisor?.trim(),
+    };
+    for (const [agent, prompt] of Object.entries(prompts)) {
+      if (!prompt) {
+        throw new BadRequestException(`${agent} prompt is required`);
+      }
+      if (prompt.length > 20_000) {
+        throw new BadRequestException(
+          `${agent} prompt must be 20000 characters or fewer`,
+        );
+      }
+    }
+    return prompts;
+  }
+
+  private agentPromptsValue(
+    value: Prisma.JsonValue,
+  ): Partial<AgentPromptsInput> {
+    if (!value || Array.isArray(value) || typeof value !== 'object') return {};
+    return Object.fromEntries(
+      Object.entries(value).filter(
+        ([key, prompt]) =>
+          ['verifier', 'evaluator', 'supervisor'].includes(key) &&
+          typeof prompt === 'string' &&
+          prompt.trim(),
+      ),
+    );
   }
 
   async createPolicy(projectId: string, input: CreatePolicyInput) {
