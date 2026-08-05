@@ -26,6 +26,40 @@
    - 실제 구현 및 검증 과정에서 드러난 문제
    - 원인 분석, 해결 방법, 재발 방지
 
+6. [SDK 실행 프로토콜](./SDK-Execution-Protocol.md)
+   - HTTP와 JSON을 포함하는 실행 계약
+   - SDK 인증, Job claim, lease, 완료와 실패 처리
+   - TypeScript SDK Worker 사용법
+7. [평가 어댑터 MVP 설계](./Evaluation-Adapter-MVP-Design.md)
+   - 기존 고객 AI를 수정하지 않는 별도 어댑터 구조
+   - `invoke()` 기반 고객 payload와 표준 결과 매핑
+   - 배포, 보안, 오류 처리와 MVP 완료 기준
+8. [평가 실행 자동화 데이터 및 오케스트레이션 설계](./Evaluation-Run-Automation-Design.md)
+   - `EvalRun`, `EvalRunCase`, `SdkJob`, `JudgeJob`, `EvalResult` 관계
+   - ADAPTER/PROVIDED_OUTPUT 실행과 REFERENCE_BASED/RUBRIC_ONLY 평가
+   - 상태 전이, 트랜잭션, 최종 상태 집계와 사용자 가치
+9. [자동 평가 사용 방법](./Automated-Evaluation-Usage.md)
+   - PostgreSQL, Ollama, Agent Engine, Backend와 Dashboard 실행
+   - PROVIDED_OUTPUT 및 ADAPTER 자동 Run 생성
+   - Mock Judge/Adapter 테스트와 상태별 문제 해결
+10. [Docker Compose 통합 실행 및 고객사 배포](./Docker-Compose-Deployment-Plan.md)
+   - Mock 평가 서비스를 한 번에 실행하는 방법
+   - Mock/실제 고객사 프로필과 컨테이너 네트워크
+   - Adapter, Ollama, 환경변수 및 통합 구현 완료 기준
+11. [고객 AI Adapter 연동 가이드](./Customer-Adapter-Integration-Guide.md)
+   - 대시보드에서 Application 등록 및 SDK Key 발급
+   - 고객 프로젝트의 Adapter 디렉터리와 파일 구성
+   - Chat/RAG/세션/도구 호출 API 매핑과 전체 평가 실행
+12. [TGZ SDK 고객사 설치 및 연동 가이드](./Customer-SDK-TGZ-Setup-Guide.md)
+   - 전달받은 `.tgz` 검증과 로컬 npm 설치
+   - Adapter 환경변수, 고객 AI 매핑, 실행 및 문제 해결
+13. [Python 고객사 Sidecar 설치 가이드](./Python-Customer-Sidecar-Setup-Guide.md)
+   - Node.js SDK와 Python AI를 분리한 Sidecar 구성
+   - 로컬, Docker Compose 및 Kubernetes 동일 Pod 배포
+   - Secret, 네트워크, timeout, 확장 및 버전 업그레이드
+14. [대시보드 리소스 추가·삭제 가이드](./Dashboard-Resource-Management.md)
+   - 프로젝트, 평가 실행, 시나리오, 정책, 어댑터 관리
+   - 삭제 영향 범위와 MVP의 권한·복구 제한
 
 ## 문서의 사실 범위
 

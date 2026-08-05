@@ -1,6 +1,6 @@
 import os
 import json
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from pydantic import BaseModel, Field
 from ollama import AsyncClient
 from dotenv import load_dotenv
@@ -21,7 +21,12 @@ class VerifierAgent:
             host=os.getenv("OLLAMA_HOST", "http://localhost:11434")
         )
 
-    async def run(self, prompt: str, output: str) -> Dict[str, Any]:
+    async def run(
+        self,
+        prompt: str,
+        output: str,
+        system_prompt: Optional[str] = None,
+    ) -> Dict[str, Any]:
         # 1. 1차 Rule-based 검증 (API 호출 절약용 - 빈값 또는 지나치게 짧은 경우)
         clean_output = output.strip()
         if not clean_output:
@@ -31,7 +36,7 @@ class VerifierAgent:
             return {"isValid": False, "reason": "응답 길이가 너무 짧아 유효하지 않습니다."}
 
         # 2. Ollama 기반 2차 유효성/안전성 검증
-        system_prompt = (
+        active_system_prompt = system_prompt or (
             "당신은 AI 에이전트의 응답을 1차 검증하는 스크리너입니다.\n"
             "에이전트의 답변이 아래 결함 요소에 해당하는지 확인하세요.\n"
             "1. 질문과 전혀 상관없는 엉뚱한 답변\n"
@@ -46,7 +51,7 @@ class VerifierAgent:
             response = await self.client.chat(
                 model=self.verifier_model,
                 messages=[
-                    {"role": "system", "content": system_prompt},
+                    {"role": "system", "content": active_system_prompt},
                     {"role": "user", "content": user_content},
                 ],
                 think=False,

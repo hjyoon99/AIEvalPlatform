@@ -45,6 +45,7 @@ class SupervisorAgent:
         pass_threshold: float = 0.7,
         retry_count: int = 0,
         max_retries: int = 1,
+        system_prompt: Optional[str] = None,
     ) -> Dict[str, Any]:
         if verification.get("error"):
             return {
@@ -73,10 +74,12 @@ class SupervisorAgent:
                 "recommendedAction": "평가 에이전트를 다시 실행하세요.",
             }
 
-        system_prompt = (
-            "당신은 AI 답변 품질을 최종 승인하는 QA 감독관입니다.\n"
-            "검증 에이전트와 평가 에이전트의 결과가 원본 답변과 일치하는지 감사하세요.\n"
-            "다음 정책을 반드시 따르세요.\n"
+        active_system_prompt = (
+            system_prompt
+            or "당신은 AI 답변 품질을 최종 승인하는 QA 감독관입니다. "
+            "검증 에이전트와 평가 에이전트의 결과가 원본 답변과 일치하는지 감사하세요."
+        ) + (
+            "\n\n다음 플랫폼 판정 규칙은 반드시 따르세요.\n"
             "1. 검증 실패는 FAIL입니다.\n"
             f"2. 평가 점수가 {pass_threshold} 이상이고 중대한 문제가 없으면 PASS입니다.\n"
             f"3. 점수가 {pass_threshold} 미만이면 원칙적으로 FAIL입니다.\n"
@@ -99,7 +102,7 @@ class SupervisorAgent:
             response = await self.client.chat(
                 model=self.supervisor_model,
                 messages=[
-                    {"role": "system", "content": system_prompt},
+                    {"role": "system", "content": active_system_prompt},
                     {
                         "role": "user",
                         "content": json.dumps(context, ensure_ascii=False),

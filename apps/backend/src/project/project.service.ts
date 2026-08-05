@@ -1,6 +1,7 @@
 import {
   BadGatewayException,
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -35,6 +36,17 @@ export interface GenerateScenariosInput {
   model?: string;
 }
 
+export interface CreateScenarioInput {
+  title: string;
+  category?: string;
+  prompt: string;
+  testOutput?: string;
+  expectedOutput?: string;
+  expectedBehavior?: string[];
+  evaluationRubric?: Record<string, unknown>;
+  riskLevel?: string;
+}
+
 export interface ReviewScenarioInput {
   status: 'APPROVED' | 'REJECTED';
   rejectionReason?: string;
@@ -49,6 +61,21 @@ export interface UpdateScenarioInput {
   evaluationRubric?: Record<string, unknown>;
   riskLevel?: string;
 }
+
+export interface AgentPromptsInput {
+  verifier: string;
+  evaluator: string;
+  supervisor: string;
+}
+
+export const DEFAULT_AGENT_PROMPTS: AgentPromptsInput = {
+  verifier:
+    '당신은 AI 에이전트 응답의 유효성과 안전성을 1차 검증하는 스크리너입니다. 질문과 무관한 답변, 시스템 오류 메시지, 유해하거나 깨진 응답을 찾아 isValid와 핵심 사유를 반환하세요.',
+  evaluator:
+    '당신은 AI 에이전트 답변의 품질을 채점하는 엄격한 평가자입니다. 사용자 질문, 실제 답변, 기대 답변과 평가 지표를 근거로 각 지표를 0.0~1.0으로 채점하고 구체적인 근거를 반환하세요.',
+  supervisor:
+    '당신은 AI 답변 품질을 최종 승인하는 QA 감독관입니다. 검증과 평가 결과가 원본 답변 및 정책과 일치하는지 감사하고 PASS, FAIL 또는 RETRY와 판정 근거를 반환하세요.',
+};
 
 interface GeneratedScenario {
   title: string;
@@ -94,6 +121,74 @@ export class ProjectService {
     });
   }
 
+  async getAgentPrompts(projectId: string) {
+    const project = await this.requireProject(projectId);
+    return {
+      ...DEFAULT_AGENT_PROMPTS,
+      ...this.agentPromptsValue(project.agentPrompts),
+    };
+  }
+
+  async updateAgentPrompts(projectId: string, input: AgentPromptsInput) {
+    await this.requireProject(projectId);
+    const prompts = this.validateAgentPrompts(input);
+    await this.prisma.project.update({
+      where: { id: projectId },
+      data: { agentPrompts: prompts as unknown as Prisma.InputJsonValue },
+    });
+    return prompts;
+  }
+
+  async deleteProject(projectId: string) {
+    await this.requireProject(projectId);
+    const activeRuns = await this.prisma.evalRun.count({
+      where: {
+        projectId,
+        status: { in: ['QUEUED', 'RUNNING'] },
+      },
+    });
+    if (activeRuns > 0) {
+      throw new ConflictException(
+        'A project with queued or running evaluations cannot be deleted',
+      );
+    }
+    await this.prisma.project.delete({ where: { id: projectId } });
+    return { id: projectId, deleted: true };
+  }
+
+  private validateAgentPrompts(input: AgentPromptsInput): AgentPromptsInput {
+    const prompts = {
+      verifier: input?.verifier?.trim(),
+      evaluator: input?.evaluator?.trim(),
+      supervisor: input?.supervisor?.trim(),
+    };
+    for (const [agent, prompt] of Object.entries(prompts)) {
+      if (!prompt) {
+        throw new BadRequestException(`${agent} prompt is required`);
+      }
+      if (prompt.length > 20_000) {
+        throw new BadRequestException(
+          `${agent} prompt must be 20000 characters or fewer`,
+        );
+      }
+    }
+    return prompts;
+  }
+
+  private agentPromptsValue(
+    value: Prisma.JsonValue,
+  ): Partial<AgentPromptsInput> {
+    if (!value || Array.isArray(value) || typeof value !== 'object') return {};
+    return Object.fromEntries(
+      Object.entries(value).filter(
+        ([key, prompt]) =>
+          ['verifier', 'evaluator', 'supervisor'].includes(key) &&
+          typeof prompt === 'string' &&
+          prompt.trim(),
+      ),
+    );
+  }
+
   async createPolicy(projectId: string, input: CreatePolicyInput) {
     await this.requireProject(projectId);
     this.validatePolicy(input);
@@ -112,6 +207,40 @@ export class ProjectService {
     return this.prisma.evaluationPolicy.findMany({
       where: { projectId },
       orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  async deletePolicy(policyId: string) {
+    const policy = await this.prisma.evaluationPolicy.findUnique({
+      where: { id: policyId },
+      select: { id: true },
+    });
+    if (!policy) {
+      throw new NotFoundException('Evaluation policy not found');
+    }
+    await this.prisma.evaluationPolicy.delete({ where: { id: policyId } });
+    return { id: policyId, deleted: true };
+  }
+
+  async createScenario(projectId: string, input: CreateScenarioInput) {
+    await this.requireProject(projectId);
+    if (!input?.title?.trim() || !input?.prompt?.trim()) {
+      throw new BadRequestException('title and prompt are required');
+    }
+    return this.prisma.scenario.create({
+      data: {
+        projectId,
+        title: input.title.trim(),
+        category: input.category?.trim() || null,
+        prompt: input.prompt.trim(),
+        testOutput: input.testOutput?.trim() || null,
+        expectedOutput: input.expectedOutput?.trim() || null,
+        expectedBehavior: input.expectedBehavior,
+        evaluationRubric: input.evaluationRubric as
+          Prisma.InputJsonValue | undefined,
+        riskLevel: input.riskLevel?.trim() || 'MEDIUM',
+        status: 'DRAFT',
+      },
     });
   }
 
@@ -222,6 +351,18 @@ export class ProjectService {
         reviewedAt: null,
       },
     });
+  }
+
+  async deleteScenario(scenarioId: string) {
+    const scenario = await this.prisma.scenario.findUnique({
+      where: { id: scenarioId },
+      select: { id: true },
+    });
+    if (!scenario) {
+      throw new NotFoundException('Scenario not found');
+    }
+    await this.prisma.scenario.delete({ where: { id: scenarioId } });
+    return { id: scenarioId, deleted: true };
   }
 
   private async requireProject(projectId: string) {

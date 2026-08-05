@@ -1,8 +1,18 @@
-import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+} from '@nestjs/common';
 import { ProjectService } from './project.service';
 import type {
+  AgentPromptsInput,
   CreatePolicyInput,
   CreateProjectInput,
+  CreateScenarioInput,
   GenerateScenariosInput,
   ReviewScenarioInput,
   UpdateScenarioInput,
@@ -22,6 +32,24 @@ export class ProjectController {
     return this.projectService.getProjects();
   }
 
+  @Get('projects/:projectId/agent-prompts')
+  getAgentPrompts(@Param('projectId') projectId: string) {
+    return this.projectService.getAgentPrompts(projectId);
+  }
+
+  @Patch('projects/:projectId/agent-prompts')
+  updateAgentPrompts(
+    @Param('projectId') projectId: string,
+    @Body() input: AgentPromptsInput,
+  ) {
+    return this.projectService.updateAgentPrompts(projectId, input);
+  }
+
+  @Delete('projects/:projectId')
+  deleteProject(@Param('projectId') projectId: string) {
+    return this.projectService.deleteProject(projectId);
+  }
+
   @Post('projects/:projectId/policies')
   createPolicy(
     @Param('projectId') projectId: string,
@@ -33,6 +61,19 @@ export class ProjectController {
   @Get('projects/:projectId/policies')
   getPolicies(@Param('projectId') projectId: string) {
     return this.projectService.getPolicies(projectId);
+  }
+
+  @Delete('policies/:policyId')
+  deletePolicy(@Param('policyId') policyId: string) {
+    return this.projectService.deletePolicy(policyId);
+  }
+
+  @Post('projects/:projectId/scenarios')
+  createScenario(
+    @Param('projectId') projectId: string,
+    @Body() input: CreateScenarioInput,
+  ) {
+    return this.projectService.createScenario(projectId, input);
   }
 
   @Post('projects/:projectId/scenarios/generate')
@@ -62,5 +103,10 @@ export class ProjectController {
     @Body() input: UpdateScenarioInput,
   ) {
     return this.projectService.updateScenario(scenarioId, input);
+  }
+
+  @Delete('scenarios/:scenarioId')
+  deleteScenario(@Param('scenarioId') scenarioId: string) {
+    return this.projectService.deleteScenario(scenarioId);
   }
 }

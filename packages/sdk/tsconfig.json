@@ -5,6 +5,11 @@
     "moduleResolution": "NodeNext",
     "strict": true,
     "declaration": true,
-    "outDir": "dist"
-  }
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "lib": ["ES2022", "DOM"]
+  },
+  "include": ["src/**/*.ts"]
 }
