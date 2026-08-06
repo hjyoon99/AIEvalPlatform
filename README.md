@@ -77,7 +77,7 @@ Ollama 기반 로컬 모델을 사용해 별도 클라우드 API 키 없이 개�
 
 > 평가 대상 서비스의 이름, 업무 도메인, 설명과 비즈니스 문맥을 등록한다. 프로젝트 문맥은 AI가 현실적인 테스트 시나리오를 생성할 때 사용한다.
 
-<img width="1495" height="719" alt="image" src="https://github.com/user-attachments/assets/da6657c1-ccf1-4ac2-a2cc-98dd01d26a53" />
+<img width="1369" height="661" alt="image" src="https://github.com/user-attachments/assets/18d84552-067a-4407-83b7-8bf3ae57a3eb" />
 
 
 ### 평가 정책 관리
@@ -97,7 +97,8 @@ Ollama 기반 로컬 모델을 사용해 별도 클라우드 API 키 없이 개�
 
 > 프로젝트와 평가 정책을 기반으로 정상, 경계와 실패 상황을 포함한 시나리오를 생성한다.
 
-<img width="1505" height="735" alt="image" src="https://github.com/user-attachments/assets/5e6707c7-b2e8-48ff-9506-286009f98c4f" />
+<img width="1398" height="674" alt="image" src="https://github.com/user-attachments/assets/e4212dd8-385a-4422-a074-1ccb27ab3270" />
+
 
 각 시나리오에는 다음 정보가 포함될 수 있다.
 
@@ -124,6 +125,7 @@ Ollama 기반 로컬 모델을 사용해 별도 클라우드 API 키 없이 개�
 ### 다중 에이전트 평가
 
 평가 엔진은 역할을 분리해 답변을 평가한다.
+해당 평가의 시스템 프롬프트는 담당자가 도메인에 맞추어 수정 가능하다.
 
 ```mermaid
 flowchart LR
@@ -139,9 +141,22 @@ flowchart LR
 - **Evaluator**: 정책과 루브릭에 따라 지표별 점수와 근거를 만든다.
 - **Supervisor**: 검증과 평가 결과의 일관성을 확인하고 PASS, FAIL 또는 RETRY를 결정한다.
 
+<img width="1367" height="673" alt="image" src="https://github.com/user-attachments/assets/4847b621-a364-403e-b41e-771f5b43d4be" />
+
+
+### 도메인별 평가 지표 설정
+
+평가를 어떻게 진행할지, 어떤 부분을 중점적으로 평가할지 등에 대한 평가 지표를 설정할 수 있습니다.
+
+<img width="1404" height="668" alt="image" src="https://github.com/user-attachments/assets/81a7d880-e3c6-4f95-a6ff-8d48d3d22332" />
+
+
+
+
 ### 평가 결과와 통계
 
-<img width="1498" height="724" alt="image" src="https://github.com/user-attachments/assets/b32a027b-f336-4f11-9676-a532b699f9b7" />
+<img width="1366" height="675" alt="image" src="https://github.com/user-attachments/assets/bb2937e0-c7ea-4209-9ef6-123516f016ad" />
+
 
 
 Dashboard에서 다음 정보를 확인할 수 있다.
