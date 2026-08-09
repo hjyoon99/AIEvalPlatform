@@ -83,6 +83,7 @@ flowchart LR
 ### 결과와 실행 이력
 
 Dashboard에서 전체 실행 수, 평균 점수, 통과율과 실행 상태를 확인할 수 있습니다. 개별 결과에는 질문과 답변, 기대값, 지표별 점수와 이유, 검증 결과, 최종 감독 판정, 재평가 횟수와 실행 시간이 포함됩니다.
+<img width="1369" height="661" alt="image" src="https://github.com/user-attachments/assets/18d84552-067a-4407-83b7-8bf3ae57a3eb" />
 
 ## 빠른 시작
 
@@ -110,6 +111,8 @@ docker compose ps
 ```
 
 모든 서비스가 `healthy`가 되면 `http://localhost:5173`에서 Dashboard를 엽니다. Backend 컨테이너 시작 시 Prisma migration과 Judge Worker도 함께 실행됩니다.
+<img width="1398" height="674" alt="image" src="https://github.com/user-attachments/assets/e4212dd8-385a-4422-a074-1ccb27ab3270" />
+
 
 ```bash
 docker compose logs -f
@@ -143,6 +146,8 @@ docker compose --profile mock up -d --build postgres mock-agent-engine
 Mock Agent Engine에 Backend를 연결하는 전체 절차와 판정 규칙은 [자동 평가 사용 가이드](./docs/Automated-Evaluation-Usage.md#4-ollama-없이-mock-judge로-테스트)를 참고하세요.
 
 ## 시스템 구조
+평가 엔진은 역할을 분리해 답변을 평가한다.
+해당 평가의 시스템 프롬프트는 담당자가 도메인에 맞추어 수정 가능하다.
 
 ```mermaid
 flowchart LR
@@ -164,6 +169,30 @@ flowchart LR
 | SDK | `packages/sdk` | Adapter Worker와 Backend 사이의 Job 프로토콜 |
 | PostgreSQL | Docker service | 정책, 시나리오, Job, 실행과 결과 저장 |
 | Ollama | 호스트 runtime | 로컬 LLM 추론 |
+- **Executor**: 출력이 없으면 테스트 대상 답변을 생성한다.
+- **Verifier**: 답변이 비어 있거나 깨졌는지, 질문과 무관하거나 유해한지 확인한다.
+- **Evaluator**: 정책과 루브릭에 따라 지표별 점수와 근거를 만든다.
+- **Supervisor**: 검증과 평가 결과의 일관성을 확인하고 PASS, FAIL 또는 RETRY를 결정한다.
+
+<img width="1367" height="673" alt="image" src="https://github.com/user-attachments/assets/4847b621-a364-403e-b41e-771f5b43d4be" />
+
+
+### 도메인별 평가 지표 설정
+
+평가를 어떻게 진행할지, 어떤 부분을 중점적으로 평가할지 등에 대한 평가 지표를 설정할 수 있습니다.
+
+<img width="1404" height="668" alt="image" src="https://github.com/user-attachments/assets/81a7d880-e3c6-4f95-a6ff-8d48d3d22332" />
+
+
+
+
+### 평가 결과와 통계
+
+<img width="1366" height="675" alt="image" src="https://github.com/user-attachments/assets/bb2937e0-c7ea-4209-9ef6-123516f016ad" />
+
+
+
+Dashboard에서 다음 정보를 확인할 수 있다.
 
 Backend의 Judge Worker는 준비된 답변을 평가 큐에서 가져가 Agent Engine으로 전달합니다. `ADAPTER` 방식에서는 SDK Worker가 먼저 고객 AI의 답변을 수집하고, `PROVIDED_OUTPUT` 방식에서는 Run 생성과 동시에 Judge Job이 준비됩니다.
 
