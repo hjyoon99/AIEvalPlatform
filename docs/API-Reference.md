@@ -1,5 +1,7 @@
 # API 명세서
 
+> Backend의 최신 전체 계약은 [Backend API 명세](./Backend-API-Specification.md)를 기준으로 한다. 이 문서는 Agent Engine 예제를 함께 제공하는 기존 참고 문서다.
+>
 > Wiki 경로: `API-Reference`
 
 ## 기본 주소
