@@ -111,7 +111,6 @@ docker compose ps
 ```
 
 모든 서비스가 `healthy`가 되면 `http://localhost:5173`에서 Dashboard를 엽니다. Backend 컨테이너 시작 시 Prisma migration과 Judge Worker도 함께 실행됩니다.
-<img width="1398" height="674" alt="image" src="https://github.com/user-attachments/assets/e4212dd8-385a-4422-a074-1ccb27ab3270" />
 
 
 ```bash
@@ -147,7 +146,7 @@ Mock Agent Engine에 Backend를 연결하는 전체 절차와 판정 규칙은 [
 
 ## 시스템 구조
 평가 엔진은 역할을 분리해 답변을 평가한다.
-해당 평가의 시스템 프롬프트는 담당자가 도메인에 맞추어 수정 가능하다.
+해당 평가의 시스템 프롬프트는 담당자가 도메인에 맞추어 수정 가능합니다.
 
 ```mermaid
 flowchart LR
@@ -183,6 +182,11 @@ flowchart LR
 
 <img width="1404" height="668" alt="image" src="https://github.com/user-attachments/assets/81a7d880-e3c6-4f95-a6ff-8d48d3d22332" />
 
+### 시나리오 설정
+
+각 평가 시나리오를 직접 Dashboard에서 생성할 수 있고, 필요하다면 AI를 통해 해당 도메인에 맞는 시나리오를 원하는 개수만큼 자동생성할 수 있습니다.
+
+<img width="1398" height="674" alt="image" src="https://github.com/user-attachments/assets/e4212dd8-385a-4422-a074-1ccb27ab3270" />
 
 
 
@@ -192,7 +196,7 @@ flowchart LR
 
 
 
-Dashboard에서 다음 정보를 확인할 수 있다.
+Dashboard에서 다음 정보를 확인할 수 있습니다.
 
 Backend의 Judge Worker는 준비된 답변을 평가 큐에서 가져가 Agent Engine으로 전달합니다. `ADAPTER` 방식에서는 SDK Worker가 먼저 고객 AI의 답변을 수집하고, `PROVIDED_OUTPUT` 방식에서는 Run 생성과 동시에 Judge Job이 준비됩니다.
 
