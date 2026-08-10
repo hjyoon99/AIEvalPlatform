@@ -220,20 +220,30 @@ Backend의 Judge Worker는 준비된 답변을 평가 큐에서 가져가 Agent 
 
 아래 버전은 현재 저장소의 Dockerfile, manifest와 lockfile 기준입니다. Python 라이브러리는 `requirements.txt`에서 하한 버전으로 관리합니다.
 
-| 영역 | 기술 | 현재 버전/기준 |
-| --- | --- | --- |
-| Frontend | React, TypeScript, Vite | React 19.2.8, TypeScript 5.9.3, Vite 7.3.6 |
-| Backend | NestJS, TypeScript | NestJS 11.1.28, TypeScript 5.9.3 |
-| ORM | Prisma | 7.9.1 |
-| Database | PostgreSQL | 15 Alpine |
-| Agent API | FastAPI, Pydantic | FastAPI ≥0.110, Pydantic ≥2.6 |
-| Workflow | LangGraph | ≥1.2.10 |
-| Model client | Ollama Python | ≥0.6.2 |
-| Default model | Qwen on Ollama | `qwen3.5:4b` |
-| Node runtime | Node.js | 22 Alpine (Docker) |
-| Python runtime | Python | 3.11 slim (Docker) |
-| Package manager | pnpm | 11.18.0 (lockfile) |
-| Web server | Nginx | 1.27 Alpine |
+### Frontend
+![React](https://img.shields.io/badge/React-19.2.8-61DAFB?style=for-the-badge&logo=react&logoColor=black)
+![TypeScript](https://img.shields.io/badge/TypeScript-5.9.3-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
+![Vite](https://img.shields.io/badge/Vite-7.3.6-646CFF?style=for-the-badge&logo=vite&logoColor=white)
+
+### Backend & ORM
+![NestJS](https://img.shields.io/badge/NestJS-11.1.28-E0234E?style=for-the-badge&logo=nestjs&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-5.9.3-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
+![Prisma](https://img.shields.io/badge/Prisma-7.9.1-2D3748?style=for-the-badge&logo=prisma&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15_Alpine-4169E1?style=for-the-badge&logo=postgresql&logoColor=white)
+
+### Agent & AI Workflow
+![FastAPI](https://img.shields.io/badge/FastAPI-≥0.110-009688?style=for-the-badge&logo=fastapi&logoColor=white)
+![Pydantic](https://img.shields.io/badge/Pydantic-≥2.6-E92063?style=for-the-badge&logo=pydantic&logoColor=white)
+![LangGraph](https://img.shields.io/badge/LangGraph-≥1.2.10-121212?style=for-the-badge&logo=langchain&logoColor=white)
+![Ollama](https://img.shields.io/badge/Ollama-≥0.6.2-000000?style=for-the-badge&logo=ollama&logoColor=white)
+![Qwen](https://img.shields.io/badge/Qwen3.5:4B-Ollama-FF6A00?style=for-the-badge&logo=alibabacloud&logoColor=white)
+
+### Infrastructure & Environments
+![Node.js](https://img.shields.io/badge/Node.js-22_Alpine-339933?style=for-the-badge&logo=nodedotjs&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3.11_slim-3776AB?style=for-the-badge&logo=python&logoColor=white)
+![pnpm](https://img.shields.io/badge/pnpm-11.18.0-F69220?style=for-the-badge&logo=pnpm&logoColor=white)
+![Nginx](https://img.shields.io/badge/Nginx-1.27_Alpine-009639?style=for-the-badge&logo=nginx&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-Container-2496ED?style=for-the-badge&logo=docker&logoColor=white)
 
 프로젝트 전체 표기 버전은 루트 `package.json`의 `1.0.0`이며, 내부 패키지는 Backend `0.0.1`, Dashboard `0.1.0`, SDK `0.0.1`로 각각 관리됩니다. 아직 공식 릴리스 태그나 안정성 보장을 의미하는 버전 체계는 아닙니다.
 
