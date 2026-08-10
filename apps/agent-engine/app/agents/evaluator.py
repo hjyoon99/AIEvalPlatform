@@ -9,17 +9,42 @@ load_dotenv()
 
 # Ollama Structured Output을 위한 Pydantic Schema 정의
 class EvaluationSchema(BaseModel):
+    """(레거시/미사용 고정 스키마) 기본 2지표 채점 결과 형태.
+
+    Attributes:
+        faithfulness: 0.0~1.0 사이의 실수(답변의 사실성 및 정확성).
+        answerRelevance: 0.0~1.0 사이의 실수(질문과의 관련성).
+        reason: 채점 이유 및 요약 설명.
+    """
+
     faithfulness: float = Field(description="0.0 ~ 1.0 사이의 실수 (답변의 사실성 및 정확성)")
     answerRelevance: float = Field(description="0.0 ~ 1.0 사이의 실수 (질문과의 관련성)")
     reason: str = Field(description="채점 이유 및 요약 설명")
 
 class MetricScoreSchema(BaseModel):
+    """사용자 정의 평가 지표 하나에 대한 채점 결과.
+
+    Attributes:
+        key: 평가 지표 key(요청에 전달된 criteria의 key와 매칭됨).
+        score: 0.0~1.0 사이의 지표 점수.
+        reason: 지표별 채점 근거.
+    """
+
     key: str = Field(description="평가 지표 key")
     score: float = Field(ge=0.0, le=1.0, description="지표 점수")
     reason: str = Field(description="지표별 채점 근거")
 
 
 class DynamicEvaluationSchema(BaseModel):
+    """Ollama structured output으로 강제되는, 다중 지표 기반 평가 결과 스키마.
+
+    Attributes:
+        metrics: 지표별 채점 결과(`MetricScoreSchema`) 목록.
+        reason: 전체 평가 요약.
+        triggeredFailConditions: 답변이 실제로 위반한 즉시 실패 조건 목록.
+        missingRequiredConditions: 답변에서 충족되지 않은 필수 조건 목록.
+    """
+
     metrics: List[MetricScoreSchema]
     reason: str = Field(description="전체 평가 요약")
     triggeredFailConditions: List[str] = Field(
@@ -33,18 +58,33 @@ class DynamicEvaluationSchema(BaseModel):
 
 
 class EvaluatorAgent:
-    """Agent 3: Ollama 기반 LLM-as-a-Judge 채점 에이전트"""
+    """Agent 3: Ollama 기반 LLM-as-a-Judge 채점 에이전트.
+
+    사용자 정의(또는 기본) 평가 지표별로 가중 평균 점수를 계산하고,
+    즉시 실패/필수 미충족 조건 위반 여부에 따라 최종 통과 여부를 판정한다.
+    """
 
     def __init__(self, judge_model: str = "qwen3.5:4b"):
+        """에이전트를 초기화하고 Ollama 비동기 클라이언트를 준비한다.
+
+        Args:
+            judge_model: `run` 호출 시 별도 모델이 지정되지 않았을 때
+                사용할 기본 채점(judge) Ollama 모델명.
+
+        Attributes set:
+            judge_model: 기본 채점 모델명.
+            client: `OLLAMA_HOST` 환경 변수(기본값
+                `http://localhost:11434`)로 연결되는 `AsyncClient` 인스턴스.
+        """
         self.judge_model = judge_model
         self.client = AsyncClient(
             host=os.getenv("OLLAMA_HOST", "http://localhost:11434")
         )
 
     async def run(
-        self, 
-        prompt: str, 
-        output: str, 
+        self,
+        prompt: str,
+        output: str,
         expected_output: Optional[str] = None,
         supervisor_feedback: Optional[str] = None,
         criteria: Optional[List[Dict[str, Any]]] = None,
@@ -52,7 +92,34 @@ class EvaluatorAgent:
         pass_threshold: float = 0.7,
         model: Optional[str] = None,
     ) -> Dict[str, Any]:
-        
+        """AI 에이전트 답변을 지표별로 채점하고 가중 평균 점수를 산출한다.
+
+        Args:
+            prompt: 원래 사용자 질문/요청 텍스트.
+            output: 채점 대상인 AI 에이전트의 실제 답변 텍스트.
+            expected_output: 정답/기대 답변. 제공되면 프롬프트에 포함되어
+                사실 정확성 비교 기준으로 사용된다.
+            supervisor_feedback: 감독관(Supervisor)이 재평가를 지시한 사유.
+                제공되면 이전 평가와 독립적으로 다시 채점하도록 지시가 추가된다.
+            criteria: 사용자 정의 평가 지표 목록. 각 항목은 `key`, `name`,
+                `weight` 등을 포함하는 딕셔너리이며, 생략 시 사실 정확성/
+                답변 관련성 2개 지표(각 가중치 0.5)를 기본으로 사용한다.
+            system_prompt: 채점에 사용할 커스텀 시스템 프롬프트. 생략 시
+                기본 LLM-as-a-Judge 지침을 사용한다.
+            pass_threshold: 최종 점수가 이 값 이상이어야 통과(`passed=True`)로
+                판정된다.
+            model: 채점 호출에 사용할 모델명. 생략 시 `judge_model`을 사용한다.
+
+        Returns:
+            다음 키를 포함하는 딕셔너리:
+                - `score` (float): 지표별 가중 평균 점수(소수점 2자리).
+                  실패 조건 위반 또는 필수 조건 누락 시 0.0으로 강제된다.
+                - `passed` (bool): `score >= pass_threshold` 여부.
+                - `metrics` (dict): `reason`, `hasExpectedOutput`,
+                  `criteria`(지표별 상세 채점 결과), `triggeredFailConditions`,
+                  `missingRequiredConditions`를 포함. Ollama 호출 실패 시에는
+                  대신 `error`와 `reason`만 포함된다.
+        """
         judge_system_prompt = system_prompt or (
             "당신은 AI 에이전트 답변의 품질을 채점하는 엄격한 평가자(LLM-as-a-Judge)입니다.\n"
             "제공된 프롬프트와 에이전트의 출력(Output)을 심사하여 평가 점수를 내리세요."
