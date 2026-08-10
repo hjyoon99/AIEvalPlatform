@@ -16,3 +16,7 @@ ollama>=0.6.2
 
 # Environment Variables
 python-dotenv>=1.0.1
+
+# Testing
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
