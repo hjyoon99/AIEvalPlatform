@@ -16,6 +16,7 @@ class EvaluationState(TypedDict, total=False):
     retry_count: int
     max_retries: int
     pass_threshold: float
+    judge_model: str
     criteria: List[Dict[str, Any]]
     agent_prompts: Dict[str, str]
 
@@ -58,6 +59,7 @@ class EvaluationWorkflow:
             prompt=state["prompt"],
             output=state["output"],
             system_prompt=state.get("agent_prompts", {}).get("verifier"),
+            model=state["judge_model"],
         )
         return {"verification": verification}
 
@@ -69,6 +71,8 @@ class EvaluationWorkflow:
             supervisor_feedback=state.get("supervisor_feedback"),
             criteria=state.get("criteria"),
             system_prompt=state.get("agent_prompts", {}).get("evaluator"),
+            pass_threshold=state["pass_threshold"],
+            model=state["judge_model"],
         )
         return {"evaluation": evaluation}
 
@@ -84,6 +88,7 @@ class EvaluationWorkflow:
             retry_count=retry_count,
             max_retries=state.get("max_retries", 1),
             system_prompt=state.get("agent_prompts", {}).get("supervisor"),
+            model=state["judge_model"],
         )
 
         result: Dict[str, Any] = {"supervision": supervision}
@@ -109,6 +114,7 @@ class EvaluationWorkflow:
         expected_output: Optional[str] = None,
         max_retries: int = 1,
         pass_threshold: float = 0.7,
+        judge_model: str = "qwen3.5:4b",
         criteria: Optional[List[Dict[str, Any]]] = None,
         agent_prompts: Optional[Dict[str, str]] = None,
     ) -> EvaluationState:
@@ -120,6 +126,7 @@ class EvaluationWorkflow:
                 "retry_count": 0,
                 "max_retries": max_retries,
                 "pass_threshold": pass_threshold,
+                "judge_model": judge_model,
                 "criteria": criteria or [],
                 "agent_prompts": agent_prompts or {},
             }

@@ -49,6 +49,8 @@ class EvaluatorAgent:
         supervisor_feedback: Optional[str] = None,
         criteria: Optional[List[Dict[str, Any]]] = None,
         system_prompt: Optional[str] = None,
+        pass_threshold: float = 0.7,
+        model: Optional[str] = None,
     ) -> Dict[str, Any]:
         
         judge_system_prompt = system_prompt or (
@@ -91,7 +93,7 @@ class EvaluatorAgent:
 
         try:
             response = await self.client.chat(
-                model=self.judge_model,
+                model=model or self.judge_model,
                 messages=[
                     {"role": "system", "content": judge_system_prompt},
                     {"role": "user", "content": user_content},
@@ -154,7 +156,7 @@ class EvaluatorAgent:
             ]
             if triggered_fail_conditions or missing_required_conditions:
                 score = 0.0
-            passed = score >= 0.7
+            passed = score >= pass_threshold
 
             return {
                 "score": score,

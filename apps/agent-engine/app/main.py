@@ -56,7 +56,7 @@ class EvalRequest(BaseModel):
             "example": {
                 "runId": "test-run-001",
                 "agentName": "customer-support-agent",
-                "model": "qwen3.5:4b",
+                "judgeModel": "qwen3.5:4b",
                 "maxRetries": 1,
                 "passThreshold": 0.7,
                 "dataset": [
@@ -77,7 +77,8 @@ class EvalRequest(BaseModel):
 
     runId: str
     agentName: str
-    model: Optional[str] = "qwen3.5:4b"
+    targetModel: Optional[str] = None
+    judgeModel: str = "qwen3.5:4b"
     maxRetries: int = Field(default=1, ge=0, le=2)
     passThreshold: float = Field(default=0.7, ge=0.0, le=1.0)
     criteria: List[Dict[str, Any]] = Field(default_factory=list)
@@ -117,7 +118,7 @@ async def run_evaluation_pipeline(request: EvalRequest):
             output_source = "generated"
             output = await executor.run(
                 prompt=item.prompt,
-                model=request.model,
+                model=request.targetModel,
                 metadata=request.metadata,
             )
         print(f"🤖 Target AI Output ({output_source}):\n{output}\n")
@@ -128,6 +129,7 @@ async def run_evaluation_pipeline(request: EvalRequest):
             expected_output=item.expectedOutput,
             max_retries=request.maxRetries,
             pass_threshold=request.passThreshold,
+            judge_model=request.judgeModel,
             criteria=item.criteria or request.criteria,
             agent_prompts=(
                 request.agentPrompts.model_dump(exclude_none=True)
