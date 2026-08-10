@@ -196,9 +196,11 @@ Scenario 기반 예시:
   "projectId": "project-uuid",
   "policyId": "policy-uuid",
   "scenarioIds": ["scenario-uuid-1", "scenario-uuid-2"],
+  "applicationId": "application-uuid",
+  "executionMode": "ADAPTER",
   "name": "고객지원 회귀 평가",
   "agentName": "customer-support-agent",
-  "model": "qwen3.5:4b"
+  "judgeModel": "qwen3.5:4b"
 }
 ```
 
@@ -207,8 +209,9 @@ Scenario 기반 예시:
 ```json
 {
   "name": "빠른 평가",
+  "executionMode": "PROVIDED_OUTPUT",
   "agentName": "sample-agent",
-  "model": "qwen3.5:4b",
+  "judgeModel": "qwen3.5:4b",
   "passThreshold": 0.7,
   "maxRetries": 1,
   "dataset": [
@@ -303,7 +306,7 @@ POST /agents/evaluate/sync
 {
   "runId": "test-run-001",
   "agentName": "sample-agent",
-  "model": "qwen3.5:4b",
+  "judgeModel": "qwen3.5:4b",
   "maxRetries": 1,
   "passThreshold": 0.7,
   "criteria": [],
@@ -317,7 +320,7 @@ POST /agents/evaluate/sync
 }
 ```
 
-output을 생략하면 Executor가 답변을 생성한다.
+`output`을 생략하면 Executor가 `targetModel`로 답변을 생성한다. `judgeModel`은 Verifier, Evaluator, Supervisor의 실제 평가 모델이다.
 
 응답:
 

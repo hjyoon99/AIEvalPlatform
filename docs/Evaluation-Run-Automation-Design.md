@@ -684,7 +684,7 @@ Dashboard, Backend, DB, Adapter와 Ollama Judge가 모두 고객사 내부에서
 
 ### 현재 API 호환 정책
 
-`POST /api/v1/eval-runs` 요청에 `executionMode`이 있으면 새 비동기 자동 실행 경로를 사용한다.
+`POST /api/v1/eval-runs` 요청은 필수 `executionMode`에 따라 비동기 자동 실행 경로를 사용한다.
 
 ```text
 executionMode = ADAPTER
@@ -694,7 +694,7 @@ executionMode = PROVIDED_OUTPUT
 → EvalRunCase와 JudgeJob 생성
 ```
 
-`executionMode`이 없는 기존 대시보드 요청은 현재 동기 Agent Engine 평가 경로를 유지한다. 자동 실행 생성 화면 전환이 완료되면 기존 경로의 제거 여부를 별도로 결정한다.
+Dashboard의 제공 답변 평가는 `PROVIDED_OUTPUT`, 고객 AI 호출 평가는 `ADAPTER`를 명시한다. 모든 결과는 `EvalRunCase → JudgeJob → EvalResult` 경로로 저장된다.
 
 ### Judge Worker 운영 설정
 

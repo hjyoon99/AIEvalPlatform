@@ -47,6 +47,7 @@ apps/agent-engine/app/
 | `retry_count` | 현재 재평가 횟수 |
 | `max_retries` | 허용 재평가 횟수 |
 | `pass_threshold` | 실행 통과 기준 |
+| `judge_model` | 세 평가 에이전트가 실제 Ollama 호출에 사용할 모델 |
 
 그래프는 `START → verify → evaluate → supervise`로 시작한다. supervise 이후 verdict와 횟수에 따라 evaluate 또는 END로 이동한다.
 
@@ -55,7 +56,7 @@ apps/agent-engine/app/
 평가 입력에 output이 없는 경우에만 호출된다.
 
 ```text
-모델: 실행 요청의 model 또는 qwen3.5:4b
+모델: 실행 요청의 targetModel 또는 qwen3.5:4b
 temperature: 0.7
 structured output: 사용하지 않음
 ```
@@ -213,7 +214,7 @@ sequenceDiagram
 
 ## 알려진 개선점
 
-- Evaluator 내부 `passed`의 고정 기준 0.7과 실행 passThreshold를 통일해야 한다.
+- Evaluator와 Supervisor는 요청의 `passThreshold`를 동일하게 사용한다.
 - 역할별 모델을 API 설정으로 분리할 수 있어야 한다.
 - 모델 digest와 프롬프트 버전을 실행 스냅샷에 저장해야 한다.
 - 다중 Judge 합의, 반복 평가 분산과 golden dataset calibration이 필요하다.

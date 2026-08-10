@@ -181,7 +181,7 @@ pnpm --filter backend exec tsc -p tsconfig.json --noEmit
 
 ### 흐름
 
-EvalService는 Agent Engine 호출 실패를 `BadGatewayException`으로 변환한다. 동시에 이미 만든 EvalRun을 `FAILED`로 변경한다.
+Judge Worker는 Agent Engine 호출 실패를 표준 Judge 오류로 변환한다. 재시도 가능 오류는 `JudgeJob`을 다시 `PENDING`으로 돌리고, 최대 시도 횟수에 도달하거나 재시도할 수 없으면 케이스를 `JUDGE_FAILED`로 확정한 뒤 EvalRun 요약을 갱신한다.
 
 ### 확인 순서
 
