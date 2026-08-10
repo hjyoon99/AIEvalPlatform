@@ -275,6 +275,7 @@ Backend의 Judge Worker는 준비된 답변을 평가 큐에서 가져가 Agent 
 
 | 문서 | 내용 |
 | --- | --- |
+| [사용자 관점 전체 실행 흐름](./docs/User-End-to-End-Flow.md) | 화면 진입부터 Backend, SDK, AI 평가와 결과 표시까지의 메서드·데이터 흐름 |
 | [프로젝트 개요](./docs/Project-Overview.md) | 목표, 사용자, 기능과 발전 방향 |
 | [전체 시스템 구조](./docs/System-Architecture.md) | 컴포넌트 책임, 신뢰 경계와 배포 단위 |
 | [아키텍처와 기술 선택](./docs/architecture.md) | 서비스 분리와 LangGraph 선택 배경 |

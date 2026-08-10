@@ -26,6 +26,7 @@ class VerifierAgent:
         prompt: str,
         output: str,
         system_prompt: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> Dict[str, Any]:
         # 1. 1차 Rule-based 검증 (API 호출 절약용 - 빈값 또는 지나치게 짧은 경우)
         clean_output = output.strip()
@@ -49,7 +50,7 @@ class VerifierAgent:
 
         try:
             response = await self.client.chat(
-                model=self.verifier_model,
+                model=model or self.verifier_model,
                 messages=[
                     {"role": "system", "content": active_system_prompt},
                     {"role": "user", "content": user_content},

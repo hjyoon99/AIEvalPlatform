@@ -56,6 +56,7 @@ type EvalRun = {
   name: string;
   agentName: string;
   model: string;
+  judgeModel?: string;
   status: string;
   passThreshold: number;
   maxRetries: number;
@@ -228,7 +229,7 @@ function App() {
   });
   const [name, setName] = useState('기본 품질 점검');
   const [agentName, setAgentName] = useState('customer-support-agent');
-  const [model, setModel] = useState('qwen3.5:4b');
+  const [judgeModel, setJudgeModel] = useState('qwen3.5:4b');
   const [passThreshold, setPassThreshold] = useState(0.7);
   const [maxRetries, setMaxRetries] = useState(1);
   const [dataset, setDataset] = useState(initialDataset);
@@ -352,15 +353,21 @@ function App() {
     setError('');
 
     try {
+      if (dataset.some((item) => !item.output.trim())) {
+        throw new Error(
+          '제공 답변 평가에서는 모든 데이터셋 항목의 실제 답변이 필요합니다.',
+        );
+      }
       const response = await fetch(`${API_URL}/eval-runs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name,
+          executionMode: 'PROVIDED_OUTPUT',
           projectId: projectId || undefined,
           policyId: policyId || undefined,
           agentName,
-          model,
+          judgeModel,
           passThreshold: policyId ? undefined : passThreshold,
           maxRetries: policyId ? undefined : maxRetries,
           dataset: dataset.map((item) => ({
@@ -517,8 +524,8 @@ function App() {
                 <label>
                   평가 모델
                   <input
-                    value={model}
-                    onChange={(event) => setModel(event.target.value)}
+                    value={judgeModel}
+                    onChange={(event) => setJudgeModel(event.target.value)}
                   />
                 </label>
                 <label>
@@ -746,6 +753,7 @@ function App() {
               <ResultExplorerCard
                 result={result}
                 index={index}
+                passThreshold={selectedRun.passThreshold}
                 key={result.id}
               />
             ))}
@@ -844,9 +852,11 @@ function VerdictBadge({ verdict }: { verdict: EvalResult['verdict'] }) {
 function ResultExplorerCard({
   result,
   index,
+  passThreshold,
 }: {
   result: EvalResult;
   index: number;
+  passThreshold: number;
 }) {
   const evaluationReason =
     result.evaluation?.metrics?.reason ?? '평가 근거가 저장되지 않았습니다.';
@@ -899,7 +909,7 @@ function ResultExplorerCard({
           name="Evaluator"
           role="품질 지표 채점"
           status={`${Math.round(result.score * 100)} SCORE`}
-          tone={result.score >= 0.7 ? 'pass' : 'warn'}
+          tone={result.score >= passThreshold ? 'pass' : 'warn'}
           reason={evaluationReason}
           metrics={
             dynamicMetrics?.length
@@ -1960,7 +1970,7 @@ function ScenarioWorkspace({
           agentName:
             applications.find((application) => application.id === applicationId)
               ?.name ?? 'customer-adapter',
-          model: 'qwen3.5:4b',
+          judgeModel: 'qwen3.5:4b',
         }),
       });
       if (!response.ok) {

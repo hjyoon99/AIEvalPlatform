@@ -17,6 +17,11 @@ import type {
   EvaluationWorkerOptions,
 } from './types.js';
 
+/**
+ * 고객 AI를 평가 플랫폼 프로토콜에 연결할 어댑터를 생성한다.
+ * @param options - 플랫폼 접속 정보와 고객 AI 호출 함수
+ * @returns 구성된 EvaluationAdapter 인스턴스
+ */
 export function createEvaluationAdapter(options: EvaluationAdapterOptions) {
   return new EvaluationAdapter(options);
 }
@@ -24,6 +29,8 @@ export function createEvaluationAdapter(options: EvaluationAdapterOptions) {
 /**
  * @deprecated 새 연동에서는 createEvaluationAdapter를 사용한다.
  * 기존 Worker 연동의 하위 호환성을 위해 유지한다.
+ * @param options - 플랫폼 접속 정보와 평가 작업 실행 함수
+ * @returns 구성된 EvaluationWorker 인스턴스
  */
 export function createEvaluationWorker(options: EvaluationWorkerOptions) {
   return new EvaluationWorker(options);

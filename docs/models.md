@@ -68,7 +68,7 @@ Evaluator는 LLM-as-a-Judge 역할이다. 입력에는 다음 정보가 포함�
 
 모델이 반환해야 하는 값은 지표 key, 0~1 점수, 지표별 근거, 전체 평가 요약, 위반한 실패 조건과 누락한 필수 조건이다. 실제 최종 점수 계산은 Python 코드에서 수행한다. 모델에게 가중 합산까지 전적으로 맡기지 않아 산술 오류와 정책 불일치를 줄인다.
 
-주의할 점은 Evaluator 내부의 `passed` 계산은 0.7을 기준으로 하지만, 최종 판정은 Supervisor가 실행별 `passThreshold`를 사용한다는 것이다. 현재 저장과 UI의 최종 기준은 Supervisor verdict다. 향후 혼동을 없애려면 Evaluator의 `passed`를 제거하거나 실행별 threshold를 전달하는 편이 좋다.
+Evaluator와 Supervisor는 모두 실행별 `passThreshold`를 사용한다. 정책을 선택하면 정책 값, 요청에서 직접 지정하면 요청 값, 둘 다 없으면 기본값 0.7이 적용된다.
 
 ## 6. Supervisor
 

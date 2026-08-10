@@ -46,6 +46,7 @@ class SupervisorAgent:
         retry_count: int = 0,
         max_retries: int = 1,
         system_prompt: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> Dict[str, Any]:
         if verification.get("error"):
             return {
@@ -100,7 +101,7 @@ class SupervisorAgent:
 
         try:
             response = await self.client.chat(
-                model=self.supervisor_model,
+                model=model or self.supervisor_model,
                 messages=[
                     {"role": "system", "content": active_system_prompt},
                     {

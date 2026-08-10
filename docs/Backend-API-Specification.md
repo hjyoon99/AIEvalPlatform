@@ -244,10 +244,10 @@ interface StartEvalRunRequest {
   policyId?: string;
   scenarioIds?: string[];
   applicationId?: string;
-  executionMode?: "ADAPTER" | "PROVIDED_OUTPUT";
+  executionMode: "ADAPTER" | "PROVIDED_OUTPUT";
   name: string;
   agentName?: string;
-  model?: string;
+  targetModel?: string;
   judgeModel?: string;
   passThreshold?: number; // 0..1
   maxRetries?: number;    // 0..2 integer
@@ -275,7 +275,7 @@ interface DatasetItem {
 
 ### 자동화 실행
 
-`executionMode`를 명시하면 비동기 실행을 만든다.
+모든 평가 실행은 `executionMode`를 필수로 받고 비동기 실행을 만든다.
 
 ADAPTER 예:
 
@@ -321,10 +321,6 @@ PROVIDED_OUTPUT 예:
 
 응답은 `QUEUED` 실행 상세다. ADAPTER는 case별 `SdkJob`, PROVIDED_OUTPUT은 `JudgeJob`을 생성한다.
 
-### 레거시 동기 실행
-
-`executionMode`를 생략하면 `name`, `agentName`, dataset이 필수다. Backend가 Agent Engine 평가를 기다린 뒤 `COMPLETED` 실행과 results를 반환한다. 엔진 실패 시 실행을 `FAILED`로 저장하고 `502`를 반환한다.
-
 ### 조회, 요약, 삭제
 
 - `GET /eval-runs`: 최근 30개, cases 상태, results, 계산된 `progress`
@@ -344,4 +340,3 @@ PROVIDED_OUTPUT 예:
 ## SDK 실행 프로토콜
 
 SDK용 네 Endpoint의 상세 계약과 상태 전이는 [SDK API 명세](./SDK-API-Specification.md)를 참고한다.
-
