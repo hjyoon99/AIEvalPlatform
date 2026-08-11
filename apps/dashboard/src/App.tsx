@@ -25,6 +25,8 @@ type EvalResult = {
   evaluation?: {
     score?: number;
     passed?: boolean;
+    skipped?: boolean;
+    reason?: string;
     metrics?: {
       faithfulness?: number;
       answerRelevance?: number;
@@ -143,11 +145,21 @@ type ScenarioRubricMetric = {
   levels: RubricLevel[];
 };
 
+type HumanGrade = {
+  score: number;
+  verdict: string;
+  perMetric?: Record<string, number>;
+  gradedBy: string;
+  gradedAt: string;
+  source: 'manual' | 'review_escalation';
+};
+
 type ScenarioRubric = {
   metrics?: ScenarioRubricMetric[];
   requiredConditions?: string[];
   failConditions?: string[];
   allowedVariations?: string[];
+  humanGrade?: HumanGrade;
 };
 
 type AIApplication = {
@@ -214,7 +226,7 @@ function formatDate(value: string) {
 
 function App() {
   const [activeView, setActiveView] = useState<
-    'runs' | 'scenarios' | 'policies' | 'adapters'
+    'runs' | 'scenarios' | 'golden' | 'policies' | 'adapters'
   >('runs');
   const [runs, setRuns] = useState<EvalRun[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -413,6 +425,13 @@ function App() {
             onClick={() => setActiveView('scenarios')}
           >
             <span>◫</span>
+          </button>
+          <button
+            className={`nav-item ${activeView === 'golden' ? 'active' : ''}`}
+            aria-label="골든 데이터셋"
+            onClick={() => setActiveView('golden')}
+          >
+            <span>★</span>
           </button>
           <button
             className={`nav-item ${activeView === 'policies' ? 'active' : ''}`}
@@ -774,6 +793,10 @@ function App() {
           />
         )}
 
+        {activeView === 'golden' && (
+          <GoldenDatasetWorkspace projects={projects} />
+        )}
+
         {activeView === 'policies' && (
           <PolicyWorkspace
             projects={projects}
@@ -858,8 +881,12 @@ function ResultExplorerCard({
   index: number;
   passThreshold: number;
 }) {
-  const evaluationReason =
-    result.evaluation?.metrics?.reason ?? '평가 근거가 저장되지 않았습니다.';
+  const evaluationSkipped = result.evaluation?.skipped === true;
+  const evaluationReason = evaluationSkipped
+    ? `Verifier가 답변을 무효로 판정해 채점을 건너뛰었습니다: ${
+        result.evaluation?.reason ?? result.verification?.reason ?? '사유 없음'
+      }`
+    : (result.evaluation?.metrics?.reason ?? '평가 근거가 저장되지 않았습니다.');
   const dynamicMetrics = result.evaluation?.metrics?.criteria?.map((metric) => ({
     label: metric.name,
     value: metric.score,
@@ -908,22 +935,34 @@ function ResultExplorerCard({
           number="02"
           name="Evaluator"
           role="품질 지표 채점"
-          status={`${Math.round(result.score * 100)} SCORE`}
-          tone={result.score >= passThreshold ? 'pass' : 'warn'}
+          status={
+            evaluationSkipped
+              ? 'SKIPPED'
+              : `${Math.round(result.score * 100)} SCORE`
+          }
+          tone={
+            evaluationSkipped
+              ? 'skip'
+              : result.score >= passThreshold
+                ? 'pass'
+                : 'warn'
+          }
           reason={evaluationReason}
           metrics={
-            dynamicMetrics?.length
-              ? dynamicMetrics
-              : [
-                  {
-                    label: '정확성',
-                    value: result.evaluation?.metrics?.faithfulness,
-                  },
-                  {
-                    label: '관련성',
-                    value: result.evaluation?.metrics?.answerRelevance,
-                  },
-                ]
+            evaluationSkipped
+              ? undefined
+              : dynamicMetrics?.length
+                ? dynamicMetrics
+                : [
+                    {
+                      label: '정확성',
+                      value: result.evaluation?.metrics?.faithfulness,
+                    },
+                    {
+                      label: '관련성',
+                      value: result.evaluation?.metrics?.answerRelevance,
+                    },
+                  ]
           }
         />
         <AgentStep
@@ -962,7 +1001,7 @@ function AgentStep({
   name: string;
   role: string;
   status: string;
-  tone: 'pass' | 'fail' | 'warn';
+  tone: 'pass' | 'fail' | 'warn' | 'skip';
   reason: string;
   metrics?: { label: string; value?: number }[];
   footer?: string;
@@ -2140,6 +2179,143 @@ function ScenarioWorkspace({
   );
 }
 
+function GoldenDatasetWorkspace({ projects }: { projects: Project[] }) {
+  const [projectId, setProjectId] = useState(projects[0]?.id ?? '');
+  const [scenarios, setScenarios] = useState<Scenario[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [selectedScenario, setSelectedScenario] = useState<Scenario | null>(
+    null,
+  );
+
+  useEffect(() => {
+    setProjectId((current) =>
+      projects.some((project) => project.id === current)
+        ? current
+        : projects[0]?.id ?? '',
+    );
+  }, [projectId, projects]);
+
+  const load = useCallback(async () => {
+    if (!projectId) {
+      setScenarios([]);
+      return;
+    }
+    setLoading(true);
+    setError('');
+    try {
+      const response = await fetch(
+        `${API_URL}/projects/${projectId}/scenarios/golden`,
+      );
+      if (!response.ok) {
+        throw new Error('골든 데이터셋을 불러오지 못했습니다.');
+      }
+      setScenarios((await response.json()) as Scenario[]);
+    } catch (loadError) {
+      setError(
+        loadError instanceof Error
+          ? loadError.message
+          : '골든 데이터셋을 불러오지 못했습니다.',
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  if (projects.length === 0) {
+    return <div className="empty-state">먼저 프로젝트를 생성해주세요.</div>;
+  }
+
+  return (
+    <section className="panel workspace-section">
+      <div className="panel-heading">
+        <div>
+          <p className="eyebrow">GOLDEN DATASET</p>
+          <h2>사람이 채점한 골든 데이터셋</h2>
+          <p className="section-description">
+            사람이 직접 채점한(humanGrade) 시나리오 중 실제 답변(testOutput)이
+            함께 있는 케이스만 모았습니다.
+          </p>
+        </div>
+        <div className="scenario-actions">
+          <select
+            value={projectId}
+            onChange={(event) => setProjectId(event.target.value)}
+          >
+            {projects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+      {error && <div className="error-banner">{error}</div>}
+      <div className="scenario-grid">
+        {!loading && scenarios.length === 0 && (
+          <div className="empty-state">
+            아직 채점된 골든 케이스가 없습니다. 시나리오 카드를 열어 "직접
+            채점"으로 등록해보세요.
+          </div>
+        )}
+        {scenarios.map((scenario) => {
+          const grade = scenario.evaluationRubric?.humanGrade;
+          return (
+            <article
+              className="scenario-card golden-card"
+              key={scenario.id}
+              onClick={() => setSelectedScenario(scenario)}
+              role="button"
+              tabIndex={0}
+            >
+              <div className="scenario-meta">
+                <span>{scenario.category || 'GENERAL'}</span>
+                {grade && (
+                  <span className={`verdict ${grade.verdict.toLowerCase()}`}>
+                    {grade.verdict}
+                  </span>
+                )}
+              </div>
+              <h3>{scenario.title}</h3>
+              <p>{scenario.prompt}</p>
+              <div className="expected-box">
+                <span>실제 답변</span>
+                {scenario.testOutput || '답변 없음'}
+              </div>
+              {grade && (
+                <div className="golden-grade">
+                  <strong>사람 채점 {Math.round(grade.score * 100)}%</strong>
+                  <span>
+                    {grade.gradedBy} ·{' '}
+                    {new Date(grade.gradedAt).toLocaleString()}
+                  </span>
+                </div>
+              )}
+              <span className="rubric-link">
+                클릭하여 채점 내용 확인·수정 →
+              </span>
+            </article>
+          );
+        })}
+      </div>
+      {selectedScenario && (
+        <ScenarioRubricModal
+          scenario={selectedScenario}
+          onClose={() => setSelectedScenario(null)}
+          onSaved={async () => {
+            setSelectedScenario(null);
+            await load();
+          }}
+        />
+      )}
+    </section>
+  );
+}
+
 function ScenarioRubricModal({
   scenario,
   onClose,
@@ -2158,6 +2334,24 @@ function ScenarioRubricModal({
   );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+
+  const humanGrade = scenario.evaluationRubric?.humanGrade;
+  const [gradeScore, setGradeScore] = useState(
+    humanGrade ? String(humanGrade.score) : '',
+  );
+  const [gradeVerdict, setGradeVerdict] = useState(humanGrade?.verdict ?? 'PASS');
+  const [gradedBy, setGradedBy] = useState(humanGrade?.gradedBy ?? '');
+  const [perMetric, setPerMetric] = useState<Record<string, string>>(
+    Object.fromEntries(
+      Object.entries(humanGrade?.perMetric ?? {}).map(([key, value]) => [
+        key,
+        String(value),
+      ]),
+    ),
+  );
+  const [gradedAt, setGradedAt] = useState(humanGrade?.gradedAt ?? '');
+  const [gradeSaving, setGradeSaving] = useState(false);
+  const [gradeError, setGradeError] = useState('');
 
   const updateList = (
     field: 'requiredConditions' | 'failConditions' | 'allowedVariations',
@@ -2220,6 +2414,57 @@ function ScenarioRubricModal({
       );
     } finally {
       setSaving(false);
+    }
+  };
+
+  const updatePerMetric = (key: string, value: string) => {
+    setPerMetric((current) => ({ ...current, [key]: value }));
+  };
+
+  const saveGrade = async () => {
+    setGradeSaving(true);
+    setGradeError('');
+    try {
+      const scoreValue = Number(gradeScore);
+      if (Number.isNaN(scoreValue) || scoreValue < 0 || scoreValue > 1) {
+        throw new Error('점수는 0~1 사이의 숫자여야 합니다.');
+      }
+      if (!gradedBy.trim()) {
+        throw new Error('채점자를 입력하세요.');
+      }
+      const perMetricValue = Object.fromEntries(
+        Object.entries(perMetric)
+          .filter(([, value]) => value.trim() !== '')
+          .map(([key, value]) => [key, Number(value)]),
+      );
+      const response = await fetch(
+        `${API_URL}/scenarios/${scenario.id}/grade`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            score: scoreValue,
+            verdict: gradeVerdict,
+            perMetric: perMetricValue,
+            gradedBy: gradedBy.trim(),
+          }),
+        },
+      );
+      if (!response.ok) {
+        const body = (await response.json()) as { message?: string };
+        throw new Error(body.message ?? '채점 저장에 실패했습니다.');
+      }
+      const updated = (await response.json()) as Scenario;
+      setGradedAt(updated.evaluationRubric?.humanGrade?.gradedAt ?? '');
+      await onSaved();
+    } catch (saveError) {
+      setGradeError(
+        saveError instanceof Error
+          ? saveError.message
+          : '채점 저장에 실패했습니다.',
+      );
+    } finally {
+      setGradeSaving(false);
     }
   };
 
@@ -2326,6 +2571,74 @@ function ScenarioRubricModal({
             </label>
           </div>
           {error && <div className="error-banner">{error}</div>}
+
+          <div className="human-grade-section">
+            <h3>직접 채점 (골든 데이터셋)</h3>
+            <p className="human-grade-hint">
+              사람이 이 시나리오의 답변을 직접 채점하면 골든 케이스로 등록됩니다.
+              {gradedAt && ` 마지막 채점: ${new Date(gradedAt).toLocaleString()}`}
+            </p>
+            <div className="rubric-condition-grid">
+              <label>
+                점수 (0~1)
+                <input
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  value={gradeScore}
+                  onChange={(event) => setGradeScore(event.target.value)}
+                />
+              </label>
+              <label>
+                판정
+                <select
+                  value={gradeVerdict}
+                  onChange={(event) => setGradeVerdict(event.target.value)}
+                >
+                  <option value="PASS">PASS</option>
+                  <option value="FAIL">FAIL</option>
+                  <option value="RETRY">RETRY</option>
+                </select>
+              </label>
+              <label>
+                채점자
+                <input
+                  type="text"
+                  placeholder="이름 또는 이메일"
+                  value={gradedBy}
+                  onChange={(event) => setGradedBy(event.target.value)}
+                />
+              </label>
+            </div>
+            {(rubric.metrics ?? []).length > 0 && (
+              <div className="rubric-levels">
+                {(rubric.metrics ?? []).map((metric) => (
+                  <label key={metric.key}>
+                    <span>{metric.name}</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={1}
+                      step={0.01}
+                      value={perMetric[metric.key] ?? ''}
+                      onChange={(event) =>
+                        updatePerMetric(metric.key, event.target.value)
+                      }
+                    />
+                  </label>
+                ))}
+              </div>
+            )}
+            {gradeError && <div className="error-banner">{gradeError}</div>}
+            <button
+              className="primary-button inline"
+              onClick={() => void saveGrade()}
+              disabled={gradeSaving}
+            >
+              {gradeSaving ? '채점 저장 중…' : '채점 저장'}
+            </button>
+          </div>
         </div>
 
         <footer>
