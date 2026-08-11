@@ -763,6 +763,15 @@ select:focus {
   border-top-color: #d9a33f;
 }
 
+.agent-step.skip {
+  border-top-color: #8b90a3;
+}
+
+.agent-step.skip .agent-status {
+  background: #eceef4;
+  color: #5b6172;
+}
+
 .agent-step-header {
   display: grid;
   grid-template-columns: 30px 1fr auto;
@@ -1216,6 +1225,41 @@ select:focus {
 .rubric-condition-grid small {
   color: #9aa0aa;
   font-weight: 500;
+}
+
+.human-grade-section {
+  display: grid;
+  gap: 14px;
+  padding-top: 18px;
+  border-top: 1px solid #ececf1;
+}
+
+.human-grade-section h3 {
+  margin: 0;
+  font-size: 13px;
+  color: #3e4656;
+}
+
+.human-grade-hint {
+  margin: 0;
+  color: #9aa0aa;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.human-grade-section .rubric-condition-grid input,
+.human-grade-section .rubric-condition-grid select,
+.human-grade-section .rubric-levels input {
+  border: 1px solid #dde0e7;
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #fafafd;
+  color: #404858;
+  font: 11px/1.55 inherit;
+}
+
+.human-grade-section .primary-button.inline {
+  justify-self: start;
 }
 
 .rubric-modal > footer {

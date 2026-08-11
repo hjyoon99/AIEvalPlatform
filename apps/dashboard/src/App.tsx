@@ -25,6 +25,8 @@ type EvalResult = {
   evaluation?: {
     score?: number;
     passed?: boolean;
+    skipped?: boolean;
+    reason?: string;
     metrics?: {
       faithfulness?: number;
       answerRelevance?: number;
@@ -143,11 +145,21 @@ type ScenarioRubricMetric = {
   levels: RubricLevel[];
 };
 
+type HumanGrade = {
+  score: number;
+  verdict: string;
+  perMetric?: Record<string, number>;
+  gradedBy: string;
+  gradedAt: string;
+  source: 'manual' | 'review_escalation';
+};
+
 type ScenarioRubric = {
   metrics?: ScenarioRubricMetric[];
   requiredConditions?: string[];
   failConditions?: string[];
   allowedVariations?: string[];
+  humanGrade?: HumanGrade;
 };
 
 type AIApplication = {
@@ -858,8 +870,12 @@ function ResultExplorerCard({
   index: number;
   passThreshold: number;
 }) {
-  const evaluationReason =
-    result.evaluation?.metrics?.reason ?? '평가 근거가 저장되지 않았습니다.';
+  const evaluationSkipped = result.evaluation?.skipped === true;
+  const evaluationReason = evaluationSkipped
+    ? `Verifier가 답변을 무효로 판정해 채점을 건너뛰었습니다: ${
+        result.evaluation?.reason ?? result.verification?.reason ?? '사유 없음'
+      }`
+    : (result.evaluation?.metrics?.reason ?? '평가 근거가 저장되지 않았습니다.');
   const dynamicMetrics = result.evaluation?.metrics?.criteria?.map((metric) => ({
     label: metric.name,
     value: metric.score,
@@ -908,22 +924,34 @@ function ResultExplorerCard({
           number="02"
           name="Evaluator"
           role="품질 지표 채점"
-          status={`${Math.round(result.score * 100)} SCORE`}
-          tone={result.score >= passThreshold ? 'pass' : 'warn'}
+          status={
+            evaluationSkipped
+              ? 'SKIPPED'
+              : `${Math.round(result.score * 100)} SCORE`
+          }
+          tone={
+            evaluationSkipped
+              ? 'skip'
+              : result.score >= passThreshold
+                ? 'pass'
+                : 'warn'
+          }
           reason={evaluationReason}
           metrics={
-            dynamicMetrics?.length
-              ? dynamicMetrics
-              : [
-                  {
-                    label: '정확성',
-                    value: result.evaluation?.metrics?.faithfulness,
-                  },
-                  {
-                    label: '관련성',
-                    value: result.evaluation?.metrics?.answerRelevance,
-                  },
-                ]
+            evaluationSkipped
+              ? undefined
+              : dynamicMetrics?.length
+                ? dynamicMetrics
+                : [
+                    {
+                      label: '정확성',
+                      value: result.evaluation?.metrics?.faithfulness,
+                    },
+                    {
+                      label: '관련성',
+                      value: result.evaluation?.metrics?.answerRelevance,
+                    },
+                  ]
           }
         />
         <AgentStep
@@ -962,7 +990,7 @@ function AgentStep({
   name: string;
   role: string;
   status: string;
-  tone: 'pass' | 'fail' | 'warn';
+  tone: 'pass' | 'fail' | 'warn' | 'skip';
   reason: string;
   metrics?: { label: string; value?: number }[];
   footer?: string;
@@ -2159,6 +2187,24 @@ function ScenarioRubricModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
+  const humanGrade = scenario.evaluationRubric?.humanGrade;
+  const [gradeScore, setGradeScore] = useState(
+    humanGrade ? String(humanGrade.score) : '',
+  );
+  const [gradeVerdict, setGradeVerdict] = useState(humanGrade?.verdict ?? 'PASS');
+  const [gradedBy, setGradedBy] = useState(humanGrade?.gradedBy ?? '');
+  const [perMetric, setPerMetric] = useState<Record<string, string>>(
+    Object.fromEntries(
+      Object.entries(humanGrade?.perMetric ?? {}).map(([key, value]) => [
+        key,
+        String(value),
+      ]),
+    ),
+  );
+  const [gradedAt, setGradedAt] = useState(humanGrade?.gradedAt ?? '');
+  const [gradeSaving, setGradeSaving] = useState(false);
+  const [gradeError, setGradeError] = useState('');
+
   const updateList = (
     field: 'requiredConditions' | 'failConditions' | 'allowedVariations',
     value: string,
@@ -2220,6 +2266,57 @@ function ScenarioRubricModal({
       );
     } finally {
       setSaving(false);
+    }
+  };
+
+  const updatePerMetric = (key: string, value: string) => {
+    setPerMetric((current) => ({ ...current, [key]: value }));
+  };
+
+  const saveGrade = async () => {
+    setGradeSaving(true);
+    setGradeError('');
+    try {
+      const scoreValue = Number(gradeScore);
+      if (Number.isNaN(scoreValue) || scoreValue < 0 || scoreValue > 1) {
+        throw new Error('점수는 0~1 사이의 숫자여야 합니다.');
+      }
+      if (!gradedBy.trim()) {
+        throw new Error('채점자를 입력하세요.');
+      }
+      const perMetricValue = Object.fromEntries(
+        Object.entries(perMetric)
+          .filter(([, value]) => value.trim() !== '')
+          .map(([key, value]) => [key, Number(value)]),
+      );
+      const response = await fetch(
+        `${API_URL}/scenarios/${scenario.id}/grade`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            score: scoreValue,
+            verdict: gradeVerdict,
+            perMetric: perMetricValue,
+            gradedBy: gradedBy.trim(),
+          }),
+        },
+      );
+      if (!response.ok) {
+        const body = (await response.json()) as { message?: string };
+        throw new Error(body.message ?? '채점 저장에 실패했습니다.');
+      }
+      const updated = (await response.json()) as Scenario;
+      setGradedAt(updated.evaluationRubric?.humanGrade?.gradedAt ?? '');
+      await onSaved();
+    } catch (saveError) {
+      setGradeError(
+        saveError instanceof Error
+          ? saveError.message
+          : '채점 저장에 실패했습니다.',
+      );
+    } finally {
+      setGradeSaving(false);
     }
   };
 
@@ -2326,6 +2423,74 @@ function ScenarioRubricModal({
             </label>
           </div>
           {error && <div className="error-banner">{error}</div>}
+
+          <div className="human-grade-section">
+            <h3>직접 채점 (골든 데이터셋)</h3>
+            <p className="human-grade-hint">
+              사람이 이 시나리오의 답변을 직접 채점하면 골든 케이스로 등록됩니다.
+              {gradedAt && ` 마지막 채점: ${new Date(gradedAt).toLocaleString()}`}
+            </p>
+            <div className="rubric-condition-grid">
+              <label>
+                점수 (0~1)
+                <input
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  value={gradeScore}
+                  onChange={(event) => setGradeScore(event.target.value)}
+                />
+              </label>
+              <label>
+                판정
+                <select
+                  value={gradeVerdict}
+                  onChange={(event) => setGradeVerdict(event.target.value)}
+                >
+                  <option value="PASS">PASS</option>
+                  <option value="FAIL">FAIL</option>
+                  <option value="RETRY">RETRY</option>
+                </select>
+              </label>
+              <label>
+                채점자
+                <input
+                  type="text"
+                  placeholder="이름 또는 이메일"
+                  value={gradedBy}
+                  onChange={(event) => setGradedBy(event.target.value)}
+                />
+              </label>
+            </div>
+            {(rubric.metrics ?? []).length > 0 && (
+              <div className="rubric-levels">
+                {(rubric.metrics ?? []).map((metric) => (
+                  <label key={metric.key}>
+                    <span>{metric.name}</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={1}
+                      step={0.01}
+                      value={perMetric[metric.key] ?? ''}
+                      onChange={(event) =>
+                        updatePerMetric(metric.key, event.target.value)
+                      }
+                    />
+                  </label>
+                ))}
+              </div>
+            )}
+            {gradeError && <div className="error-banner">{gradeError}</div>}
+            <button
+              className="primary-button inline"
+              onClick={() => void saveGrade()}
+              disabled={gradeSaving}
+            >
+              {gradeSaving ? '채점 저장 중…' : '채점 저장'}
+            </button>
+          </div>
         </div>
 
         <footer>
