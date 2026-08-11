@@ -58,6 +58,14 @@ class EvaluationWorkflow:
     실제 판정(PASS/FAIL/RETRY)은 `SupervisorAgent`(LLM)가 내리지만, 그
     판정을 실제 노드 이동으로 바꾸는 라우팅 자체는 코드가 제한된 enum
     값(`verify`/`evaluate`/`skip_evaluation`/`END`)만으로 결정한다.
+
+    용어 주의: 여기서 "supervisor"는 이 그래프 안의 라우팅 허브 노드를
+    가리키며, Backend의 `JudgeJob`/`JudgeWorker`(Agent Engine 전체 호출
+    1건을 감싸는 큐 테이블/워커, `apps/backend/prisma/schema.prisma`)와는
+    다른 개념이다. 향후 다중 모델 합의(consensus) 로직을 노드로 추가할
+    때는 `consensus_evaluator`/`aggregate_consensus`처럼 명명하고,
+    `JudgeJob`/`JudgeWorker`가 이미 쓰고 있는 `judge_*` 접두어는 쓰지
+    않는다.
     """
 
     def __init__(
