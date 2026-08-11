@@ -145,13 +145,13 @@ class ScenarioGenerateRequest(BaseModel):
     model: str = "qwen3.5:4b"
 
 
-# 🔄 핵심 파이프라인 연결 및 실행 로직
+# 핵심 파이프라인 연결 및 실행 로직
 async def run_evaluation_pipeline(request: EvalRequest):
     """요청의 각 데이터셋 항목에 대해 답변 생성(선택) 및 평가 워크플로를 실행한다.
 
     데이터셋 항목에 `output`이 없으면 `TaskExecutorAgent`로 답변을 생성한
-    뒤, `EvaluationWorkflow`(verify -> evaluate -> supervise)를 실행하여
-    검증/채점/최종 판정 결과를 수집한다.
+    뒤, `EvaluationWorkflow`(supervisor 허브가 verify/evaluate를 라우팅)를
+    실행하여 검증/채점/최종 판정 결과를 수집한다.
 
     Args:
         request: 평가 실행 설정과 데이터셋을 담은 `EvalRequest`.
