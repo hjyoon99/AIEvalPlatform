@@ -1,7 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from 'prisma/prisma.service';
-import type { EvalDatasetItemInput, StartEvalRunInput } from './eval.service';
+import type {
+  EvalDatasetItemInput,
+  StartEvalRunInput,
+} from './dto/create-eval-run.dto';
 
 export interface EvalPolicyRecord {
   id: string;
