@@ -101,6 +101,23 @@ async def test_valid_verification_still_calls_evaluator():
     assert result["supervision"]["verdict"] == "PASS"
 
 
+def test_workers_only_connect_through_supervisor():
+    """워커(verify/evaluate/skip_evaluation)가 서로 직접 연결되지 않고,
+    반드시 supervisor를 거쳐서만 오간다는 그래프 구조를 검증한다."""
+    workflow = EvaluationWorkflow(
+        verifier=FakeVerifier(is_valid=True),
+        evaluator=FakeEvaluator(),
+        supervisor=FakeSupervisor(),
+    )
+
+    workers = {"verify", "evaluate", "skip_evaluation"}
+    for edge in workflow.graph.get_graph().edges:
+        if edge.source in workers:
+            assert edge.target == "supervisor"
+        if edge.target in workers:
+            assert edge.source == "supervisor"
+
+
 @pytest.mark.asyncio
 async def test_retry_loop_still_calls_evaluator_again():
     verifier = FakeVerifier(is_valid=True)
