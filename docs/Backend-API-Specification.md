@@ -268,8 +268,14 @@ interface DatasetItem {
   failConditions?: string[];
   allowedVariations?: string[];
   criteria?: Record<string, unknown>[];
+  metadata?: {
+    retrievedDocuments?: unknown[];
+    toolCalls?: unknown[];
+  };
 }
 ```
+
+`metadata`는 답변 유형(RAG/도구호출/일반) 분류에 쓰이는 선택 필드다. `retrievedDocuments`가 있으면 RAG 답변, `toolCalls`가 있으면 도구 호출 답변으로 간주하며, `metadata` 자체가 없거나 둘 다 없으면 기존과 동일하게 "일반" 유형으로 처리되어 하위 호환된다.
 
 `dataset`이 없고 `scenarioIds`가 있으면 선택 프로젝트의 승인된 시나리오를 dataset으로 변환한다.
 
