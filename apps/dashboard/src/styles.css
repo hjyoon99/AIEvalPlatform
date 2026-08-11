@@ -981,6 +981,26 @@ select:focus {
   font-weight: 700;
 }
 
+.golden-grade {
+  margin-top: 10px;
+  padding: 11px;
+  border-radius: 8px;
+  background: #fff8e6;
+  color: #8a6d1f;
+}
+
+.golden-grade strong {
+  display: block;
+  font-size: 11px;
+}
+
+.golden-grade span {
+  display: block;
+  margin-top: 4px;
+  color: #a88a3e;
+  font-size: 9px;
+}
+
 .review-actions {
   display: grid;
   grid-template-columns: 1fr 1fr;

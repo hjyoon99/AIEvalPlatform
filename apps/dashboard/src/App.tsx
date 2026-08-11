@@ -226,7 +226,7 @@ function formatDate(value: string) {
 
 function App() {
   const [activeView, setActiveView] = useState<
-    'runs' | 'scenarios' | 'policies' | 'adapters'
+    'runs' | 'scenarios' | 'golden' | 'policies' | 'adapters'
   >('runs');
   const [runs, setRuns] = useState<EvalRun[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -425,6 +425,13 @@ function App() {
             onClick={() => setActiveView('scenarios')}
           >
             <span>◫</span>
+          </button>
+          <button
+            className={`nav-item ${activeView === 'golden' ? 'active' : ''}`}
+            aria-label="골든 데이터셋"
+            onClick={() => setActiveView('golden')}
+          >
+            <span>★</span>
           </button>
           <button
             className={`nav-item ${activeView === 'policies' ? 'active' : ''}`}
@@ -784,6 +791,10 @@ function App() {
               setActiveView('runs');
             }}
           />
+        )}
+
+        {activeView === 'golden' && (
+          <GoldenDatasetWorkspace projects={projects} />
         )}
 
         {activeView === 'policies' && (
@@ -2153,6 +2164,143 @@ function ScenarioWorkspace({
             </div>
           </article>
         ))}
+      </div>
+      {selectedScenario && (
+        <ScenarioRubricModal
+          scenario={selectedScenario}
+          onClose={() => setSelectedScenario(null)}
+          onSaved={async () => {
+            setSelectedScenario(null);
+            await load();
+          }}
+        />
+      )}
+    </section>
+  );
+}
+
+function GoldenDatasetWorkspace({ projects }: { projects: Project[] }) {
+  const [projectId, setProjectId] = useState(projects[0]?.id ?? '');
+  const [scenarios, setScenarios] = useState<Scenario[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [selectedScenario, setSelectedScenario] = useState<Scenario | null>(
+    null,
+  );
+
+  useEffect(() => {
+    setProjectId((current) =>
+      projects.some((project) => project.id === current)
+        ? current
+        : projects[0]?.id ?? '',
+    );
+  }, [projectId, projects]);
+
+  const load = useCallback(async () => {
+    if (!projectId) {
+      setScenarios([]);
+      return;
+    }
+    setLoading(true);
+    setError('');
+    try {
+      const response = await fetch(
+        `${API_URL}/projects/${projectId}/scenarios/golden`,
+      );
+      if (!response.ok) {
+        throw new Error('골든 데이터셋을 불러오지 못했습니다.');
+      }
+      setScenarios((await response.json()) as Scenario[]);
+    } catch (loadError) {
+      setError(
+        loadError instanceof Error
+          ? loadError.message
+          : '골든 데이터셋을 불러오지 못했습니다.',
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  if (projects.length === 0) {
+    return <div className="empty-state">먼저 프로젝트를 생성해주세요.</div>;
+  }
+
+  return (
+    <section className="panel workspace-section">
+      <div className="panel-heading">
+        <div>
+          <p className="eyebrow">GOLDEN DATASET</p>
+          <h2>사람이 채점한 골든 데이터셋</h2>
+          <p className="section-description">
+            사람이 직접 채점한(humanGrade) 시나리오 중 실제 답변(testOutput)이
+            함께 있는 케이스만 모았습니다.
+          </p>
+        </div>
+        <div className="scenario-actions">
+          <select
+            value={projectId}
+            onChange={(event) => setProjectId(event.target.value)}
+          >
+            {projects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+      {error && <div className="error-banner">{error}</div>}
+      <div className="scenario-grid">
+        {!loading && scenarios.length === 0 && (
+          <div className="empty-state">
+            아직 채점된 골든 케이스가 없습니다. 시나리오 카드를 열어 "직접
+            채점"으로 등록해보세요.
+          </div>
+        )}
+        {scenarios.map((scenario) => {
+          const grade = scenario.evaluationRubric?.humanGrade;
+          return (
+            <article
+              className="scenario-card golden-card"
+              key={scenario.id}
+              onClick={() => setSelectedScenario(scenario)}
+              role="button"
+              tabIndex={0}
+            >
+              <div className="scenario-meta">
+                <span>{scenario.category || 'GENERAL'}</span>
+                {grade && (
+                  <span className={`verdict ${grade.verdict.toLowerCase()}`}>
+                    {grade.verdict}
+                  </span>
+                )}
+              </div>
+              <h3>{scenario.title}</h3>
+              <p>{scenario.prompt}</p>
+              <div className="expected-box">
+                <span>실제 답변</span>
+                {scenario.testOutput || '답변 없음'}
+              </div>
+              {grade && (
+                <div className="golden-grade">
+                  <strong>사람 채점 {Math.round(grade.score * 100)}%</strong>
+                  <span>
+                    {grade.gradedBy} ·{' '}
+                    {new Date(grade.gradedAt).toLocaleString()}
+                  </span>
+                </div>
+              )}
+              <span className="rubric-link">
+                클릭하여 채점 내용 확인·수정 →
+              </span>
+            </article>
+          );
+        })}
       </div>
       {selectedScenario && (
         <ScenarioRubricModal
