@@ -1,7 +1,8 @@
 import logging
-from typing import Any, Dict, List, Literal, Optional, TypedDict
+from typing import Any, Dict, List, Optional, TypedDict
 
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command
 
 from app.agents import EvaluatorAgent, SupervisorAgent, VerifierAgent
 
@@ -15,9 +16,11 @@ class EvaluationState(TypedDict, total=False):
         prompt: 원래 사용자 질문/요청 텍스트.
         output: 검증/평가 대상인 AI 에이전트의 답변 텍스트.
         expected_output: 정답/기대 답변(선택).
-        verification: `VerifierAgent.run` 결과.
-        evaluation: `EvaluatorAgent.run` 결과.
-        supervision: `SupervisorAgent.run` 결과.
+        verification: `VerifierAgent.run` 결과. 아직 실행 전이면 `None`.
+        evaluation: `EvaluatorAgent.run` 결과(또는 skip stub). 아직 실행 전이거나
+            RETRY로 재평가를 기다리는 동안은 `None`.
+        supervision: `SupervisorAgent.run` 결과. 아직 판정 전이거나 RETRY로
+            재판정을 기다리는 동안은 `None`.
         supervisor_feedback: 감독관이 RETRY를 지시했을 때 남긴 재평가 사유.
         retry_count: 지금까지 수행한 재평가 횟수.
         max_retries: 허용되는 최대 재평가 횟수.
@@ -31,9 +34,9 @@ class EvaluationState(TypedDict, total=False):
     prompt: str
     output: str
     expected_output: Optional[str]
-    verification: Dict[str, Any]
-    evaluation: Dict[str, Any]
-    supervision: Dict[str, Any]
+    verification: Optional[Dict[str, Any]]
+    evaluation: Optional[Dict[str, Any]]
+    supervision: Optional[Dict[str, Any]]
     supervisor_feedback: Optional[str]
     retry_count: int
     max_retries: int
@@ -44,13 +47,17 @@ class EvaluationState(TypedDict, total=False):
 
 
 class EvaluationWorkflow:
-    """Verifier, Evaluator, Supervisor를 연결하는 LangGraph 워크플로.
+    """`supervisor`를 허브로 두고 워커(verify/evaluate/skip_evaluation)를
+    호출하는 LangGraph 워크플로.
 
-    `verify` 이후 검증이 무효(`isValid=False`)면 `evaluate`를 건너뛰고
-    `skip_evaluation`에서 LLM 호출 없이 stub 결과를 채운 뒤 `supervise`로
-    합류한다. 검증이 유효하면 `verify -> evaluate -> supervise` 순서로
-    실행하며, 감독관이 RETRY를 판정하면 `evaluate` 노드로 돌아가 재평가
-    루프를 돈다.
+    라우팅 권한은 전부 `supervisor` 노드 하나에 집중된다. 워커 노드는
+    실행이 끝나면 항상 `supervisor`로만 복귀하며 서로를 직접 호출하지
+    않는다. `supervisor`는 누적된 상태(`verification`/`evaluation`/
+    `supervision`)를 보고 매번 다음 행동을 `Command(goto=...)`로 결정한다.
+
+    실제 판정(PASS/FAIL/RETRY)은 `SupervisorAgent`(LLM)가 내리지만, 그
+    판정을 실제 노드 이동으로 바꾸는 라우팅 자체는 코드가 제한된 enum
+    값(`verify`/`evaluate`/`skip_evaluation`/`END`)만으로 결정한다.
     """
 
     def __init__(
@@ -76,40 +83,28 @@ class EvaluationWorkflow:
         self.graph = self._build_graph()
 
     def _build_graph(self):
-        """verify/evaluate/supervise 노드와 재평가 라우팅을 연결한 상태 그래프를 만든다.
+        """`supervisor`를 허브로 두고 워커 노드가 항상 복귀하는 상태 그래프를 만든다.
 
         Returns:
-            `START -> verify` 이후 `_route_verification` 결과에 따라
-            `evaluate`(유효) 또는 `skip_evaluation`(무효, LLM 호출 없음)로
-            분기하고 `supervise`에서 합류하는 컴파일된 LangGraph 실행 그래프.
-            supervise 이후에는 `_route_supervision` 결과에 따라 `evaluate`로
-            되돌아가거나(RETRY) `END`로 종료된다(PASS/FAIL).
+            `START -> supervisor`로 시작하는 컴파일된 LangGraph 실행 그래프.
+            `verify`/`evaluate`/`skip_evaluation` 워커는 실행 후 고정 엣지로
+            무조건 `supervisor`로만 복귀하며, `supervisor`는 매번 상태를 보고
+            `Command(goto=...)`로 다음 워커(또는 `END`)를 결정한다.
         """
         builder = StateGraph(EvaluationState)
+        builder.add_node(
+            "supervisor",
+            self._supervisor_node,
+            destinations=("verify", "evaluate", "skip_evaluation", END),
+        )
         builder.add_node("verify", self._verify)
         builder.add_node("evaluate", self._evaluate)
         builder.add_node("skip_evaluation", self._skip_evaluation)
-        builder.add_node("supervise", self._supervise)
 
-        builder.add_edge(START, "verify")
-        builder.add_conditional_edges(
-            "verify",
-            self._route_verification,
-            {
-                "evaluate": "evaluate",
-                "skip": "skip_evaluation",
-            },
-        )
-        builder.add_edge("evaluate", "supervise")
-        builder.add_edge("skip_evaluation", "supervise")
-        builder.add_conditional_edges(
-            "supervise",
-            self._route_supervision,
-            {
-                "retry": "evaluate",
-                "end": END,
-            },
-        )
+        builder.add_edge(START, "supervisor")
+        builder.add_edge("verify", "supervisor")
+        builder.add_edge("evaluate", "supervisor")
+        builder.add_edge("skip_evaluation", "supervisor")
         return builder.compile()
 
     async def _verify(self, state: EvaluationState) -> Dict[str, Any]:
@@ -129,21 +124,6 @@ class EvaluationWorkflow:
             model=state["judge_model"],
         )
         return {"verification": verification}
-
-    @staticmethod
-    def _route_verification(state: EvaluationState) -> Literal["evaluate", "skip"]:
-        """`verify` 노드 이후 다음 단계를 결정하는 조건부 라우팅 함수.
-
-        Args:
-            state: `verification` 판정 결과를 포함하는 현재 그래프 상태.
-
-        Returns:
-            `verification.isValid`가 `True`이면 `"evaluate"`, `False`이면
-            `"skip"`(evaluate 노드로 가지 않고 `skip_evaluation`으로 분기).
-        """
-        if state["verification"].get("isValid", False):
-            return "evaluate"
-        return "skip"
 
     async def _skip_evaluation(self, state: EvaluationState) -> Dict[str, Any]:
         """`skip_evaluation` 노드: Verifier가 무효 판정을 내렸을 때 EvaluatorAgent
@@ -200,60 +180,64 @@ class EvaluationWorkflow:
         )
         return {"evaluation": evaluation}
 
-    async def _supervise(self, state: EvaluationState) -> Dict[str, Any]:
-        """`supervise` 노드: 검증/평가 결과를 감독관에게 넘겨 최종 판정을 받는다.
+    async def _supervisor_node(self, state: EvaluationState) -> Command:
+        """`supervisor` 노드: 누적된 상태를 보고 다음 행동을 매번 재판단하는 허브.
 
-        판정이 RETRY이면 `retry_count`를 1 증가시키고, 다음 `evaluate`
-        노드 실행에 사용할 `supervisor_feedback`을 상태에 추가한다.
+        워커가 아직 실행되지 않은 단계로 라우팅하고, 모든 워커가 끝나
+        평가 결과가 갖춰지면 그때 `SupervisorAgent`(LLM)를 호출해 최종
+        판정을 받는다. LLM의 판정(PASS/FAIL/RETRY)을 실제 `Command.goto`로
+        바꾸는 결정은 코드가 내리며, 제한된 노드 이름/`END`만 반환한다.
 
-        Args:
-            state: `prompt`, `output`, `verification`, `evaluation`,
-                `judge_model` 등을 포함하는 현재 그래프 상태.
-
-        Returns:
-            상태에 병합될 딕셔너리. 항상 `supervision`을 포함하며,
-            RETRY 판정 시에는 갱신된 `retry_count`와 `supervisor_feedback`도
-            함께 포함한다.
-        """
-        retry_count = state.get("retry_count", 0)
-        supervision = await self.supervisor.run(
-            prompt=state["prompt"],
-            output=state["output"],
-            expected_output=state.get("expected_output"),
-            verification=state["verification"],
-            evaluation=state["evaluation"],
-            pass_threshold=state.get("pass_threshold", 0.7),
-            retry_count=retry_count,
-            max_retries=state.get("max_retries", 1),
-            system_prompt=state.get("agent_prompts", {}).get("supervisor"),
-            model=state["judge_model"],
-        )
-
-        result: Dict[str, Any] = {"supervision": supervision}
-        if supervision["verdict"] == "RETRY":
-            result["retry_count"] = retry_count + 1
-            result["supervisor_feedback"] = supervision["reason"]
-        return result
-
-    @staticmethod
-    def _route_supervision(state: EvaluationState) -> Literal["retry", "end"]:
-        """`supervise` 노드 이후 다음 단계를 결정하는 조건부 라우팅 함수.
+        RETRY 판정 시에는 `retry_count`를 증가시키고 `evaluation`과
+        `supervision`을 `None`으로 되돌려, 다음 `evaluate` 실행 후 이
+        노드가 재판정을 수행하도록 신호를 남긴다.
 
         Args:
-            state: `supervision` 판정 결과와 `retry_count`, `max_retries`를
-                포함하는 현재 그래프 상태.
+            state: `verification`/`evaluation`/`supervision`의 진행 상태와
+                `prompt`, `output`, `judge_model` 등을 포함하는 현재 그래프 상태.
 
         Returns:
-            판정이 "RETRY"이고 재시도 횟수가 한도 이내이면 `"retry"`
-            (evaluate 노드로 재진입), 그 외에는 `"end"`(그래프 종료).
+            다음으로 이동할 노드(`verify`/`evaluate`/`skip_evaluation`/`END`)와
+            상태 갱신 내용을 담은 `Command`.
         """
-        supervision = state["supervision"]
-        if (
-            supervision["verdict"] == "RETRY"
-            and state.get("retry_count", 0) <= state.get("max_retries", 1)
-        ):
-            return "retry"
-        return "end"
+        if state.get("verification") is None:
+            return Command(goto="verify")
+
+        if state.get("evaluation") is None:
+            target = "evaluate" if state["verification"].get("isValid", False) else "skip_evaluation"
+            return Command(goto=target)
+
+        if state.get("supervision") is None:
+            retry_count = state.get("retry_count", 0)
+            max_retries = state.get("max_retries", 1)
+            supervision = await self.supervisor.run(
+                prompt=state["prompt"],
+                output=state["output"],
+                expected_output=state.get("expected_output"),
+                verification=state["verification"],
+                evaluation=state["evaluation"],
+                pass_threshold=state.get("pass_threshold", 0.7),
+                retry_count=retry_count,
+                max_retries=max_retries,
+                system_prompt=state.get("agent_prompts", {}).get("supervisor"),
+                model=state["judge_model"],
+            )
+
+            if supervision["verdict"] == "RETRY" and retry_count <= max_retries:
+                return Command(
+                    goto="evaluate",
+                    update={
+                        "retry_count": retry_count + 1,
+                        "supervisor_feedback": supervision["reason"],
+                        "evaluation": None,
+                        "supervision": None,
+                    },
+                )
+            return Command(goto=END, update={"supervision": supervision})
+
+        # 방어적 처리: verification/evaluation/supervision이 모두 채워진
+        # 상태로 다시 들어오는 경우는 정상 흐름에서 발생하지 않는다.
+        raise RuntimeError("supervisor_node reached with no pending action")
 
     async def run(
         self,
@@ -266,7 +250,7 @@ class EvaluationWorkflow:
         criteria: Optional[List[Dict[str, Any]]] = None,
         agent_prompts: Optional[Dict[str, str]] = None,
     ) -> EvaluationState:
-        """초기 상태를 구성하여 verify -> evaluate -> supervise 그래프를 실행한다.
+        """초기 상태를 구성하여 supervisor 허브 그래프를 실행한다.
 
         Args:
             prompt: 평가할 사용자 질문/요청 텍스트.
