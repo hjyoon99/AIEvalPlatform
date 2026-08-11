@@ -32,6 +32,21 @@ evaluation_workflow = EvaluationWorkflow(
 scenario_generator = ScenarioGeneratorAgent()
 
 # Request/Response 스키마
+class DatasetItemMetadata(BaseModel):
+    """답변 유형(RAG/도구호출/일반) 분류에 쓰이는 부가 정보.
+
+    필드가 전부 생략되면(또는 `metadata` 자체가 없으면) 해당 항목은
+    "일반" 유형으로 처리된다.
+
+    Attributes:
+        retrievedDocuments: RAG 답변이 근거로 인용한 문서 목록(선택).
+        toolCalls: 도구 호출 답변이 실행한 도구 호출 목록(선택).
+    """
+
+    retrievedDocuments: Optional[List[Any]] = None
+    toolCalls: Optional[List[Any]] = None
+
+
 class EvalDatasetItem(BaseModel):
     """평가 요청(`EvalRequest`) 내 데이터셋 한 건.
 
@@ -42,6 +57,8 @@ class EvalDatasetItem(BaseModel):
         expectedOutput: 정답/기대 답변(선택).
         criteria: 이 항목에만 적용할 사용자 정의 평가 지표 목록. 생략 시
             `EvalRequest.criteria`(요청 전체 기본 지표)가 사용된다.
+        metadata: 답변 유형 분류용 부가 정보(선택). 생략 시 "일반" 유형으로
+            처리된다.
     """
 
     prompt: str
@@ -53,6 +70,7 @@ class EvalDatasetItem(BaseModel):
     )
     expectedOutput: Optional[str] = None
     criteria: Optional[List[Dict[str, Any]]] = None
+    metadata: Optional[DatasetItemMetadata] = None
 
 
 class AgentPrompts(BaseModel):

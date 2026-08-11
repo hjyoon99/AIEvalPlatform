@@ -19,6 +19,11 @@ export interface EvalDatasetItemInput {
   failConditions?: string[];
   allowedVariations?: string[];
   criteria?: Record<string, unknown>[];
+  /** 답변 유형 분류(RAG/도구호출/일반)에 쓰이는 부가 정보. 생략 시 "일반" 유형으로 처리된다. */
+  metadata?: {
+    retrievedDocuments?: unknown[];
+    toolCalls?: unknown[];
+  };
 }
 
 /** 평가 실행 생성 방식, 모델, 정책, 데이터셋을 정의하는 요청 계약이다. */

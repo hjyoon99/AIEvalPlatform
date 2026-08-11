@@ -292,6 +292,26 @@ AIEVAL_POLL_INTERVAL_MS=1000
 customer-ai-service/evaluation-adapter/src/adapter.mjs
 ```
 
+`invoke()`는 다음 형태를 반환해야 한다(`ExecutionResult`, 전체 정의는 [SDK-API-Specification.md](./SDK-API-Specification.md#공개-타입) 참고):
+
+```ts
+interface ExecutionResult {
+  output: string;
+  metadata?: {
+    model?: string;
+    modelVersion?: string;
+    latencyMs?: number;
+    tokenUsage?: { input?: number; output?: number };
+    retrievedDocuments?: unknown[]; // RAG 답변이 근거로 인용한 문서
+    toolCalls?: unknown[];          // 도구 호출 답변이 실행한 도구 호출
+    traceId?: string;
+    [key: string]: unknown;
+  };
+}
+```
+
+`metadata.retrievedDocuments`/`toolCalls`는 평가 플랫폼이 답변 유형(RAG/도구호출/일반)을 판별하는 데 쓰인다. 둘 다 생략하면 "일반" 유형으로 처리되므로 기존 Adapter 구현은 수정 없이 계속 동작한다.
+
 기본 HTTP Adapter 예:
 
 ```js
