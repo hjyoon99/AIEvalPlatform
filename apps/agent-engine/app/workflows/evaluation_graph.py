@@ -1,8 +1,11 @@
+import logging
 from typing import Any, Dict, List, Literal, Optional, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
 from app.agents import EvaluatorAgent, SupervisorAgent, VerifierAgent
+
+logger = logging.getLogger(__name__)
 
 
 class EvaluationState(TypedDict, total=False):
@@ -43,8 +46,11 @@ class EvaluationState(TypedDict, total=False):
 class EvaluationWorkflow:
     """Verifier, Evaluator, Supervisor를 연결하는 LangGraph 워크플로.
 
-    `verify -> evaluate -> supervise` 순서로 노드를 실행하며, 감독관이
-    RETRY를 판정하면 `evaluate` 노드로 돌아가 재평가 루프를 돈다.
+    `verify` 이후 검증이 무효(`isValid=False`)면 `evaluate`를 건너뛰고
+    `skip_evaluation`에서 LLM 호출 없이 stub 결과를 채운 뒤 `supervise`로
+    합류한다. 검증이 유효하면 `verify -> evaluate -> supervise` 순서로
+    실행하며, 감독관이 RETRY를 판정하면 `evaluate` 노드로 돌아가 재평가
+    루프를 돈다.
     """
 
     def __init__(
@@ -73,19 +79,29 @@ class EvaluationWorkflow:
         """verify/evaluate/supervise 노드와 재평가 라우팅을 연결한 상태 그래프를 만든다.
 
         Returns:
-            `START -> verify -> evaluate -> supervise` 순서로 실행되고,
-            supervise 이후 `_route_supervision` 결과에 따라 `evaluate`로
-            되돌아가거나(RETRY) `END`로 종료되는(PASS/FAIL) 컴파일된
-            LangGraph 실행 그래프.
+            `START -> verify` 이후 `_route_verification` 결과에 따라
+            `evaluate`(유효) 또는 `skip_evaluation`(무효, LLM 호출 없음)로
+            분기하고 `supervise`에서 합류하는 컴파일된 LangGraph 실행 그래프.
+            supervise 이후에는 `_route_supervision` 결과에 따라 `evaluate`로
+            되돌아가거나(RETRY) `END`로 종료된다(PASS/FAIL).
         """
         builder = StateGraph(EvaluationState)
         builder.add_node("verify", self._verify)
         builder.add_node("evaluate", self._evaluate)
+        builder.add_node("skip_evaluation", self._skip_evaluation)
         builder.add_node("supervise", self._supervise)
 
         builder.add_edge(START, "verify")
-        builder.add_edge("verify", "evaluate")
+        builder.add_conditional_edges(
+            "verify",
+            self._route_verification,
+            {
+                "evaluate": "evaluate",
+                "skip": "skip_evaluation",
+            },
+        )
         builder.add_edge("evaluate", "supervise")
+        builder.add_edge("skip_evaluation", "supervise")
         builder.add_conditional_edges(
             "supervise",
             self._route_supervision,
@@ -113,6 +129,51 @@ class EvaluationWorkflow:
             model=state["judge_model"],
         )
         return {"verification": verification}
+
+    @staticmethod
+    def _route_verification(state: EvaluationState) -> Literal["evaluate", "skip"]:
+        """`verify` 노드 이후 다음 단계를 결정하는 조건부 라우팅 함수.
+
+        Args:
+            state: `verification` 판정 결과를 포함하는 현재 그래프 상태.
+
+        Returns:
+            `verification.isValid`가 `True`이면 `"evaluate"`, `False`이면
+            `"skip"`(evaluate 노드로 가지 않고 `skip_evaluation`으로 분기).
+        """
+        if state["verification"].get("isValid", False):
+            return "evaluate"
+        return "skip"
+
+    async def _skip_evaluation(self, state: EvaluationState) -> Dict[str, Any]:
+        """`skip_evaluation` 노드: Verifier가 무효 판정을 내렸을 때 EvaluatorAgent
+        호출 없이 stub 평가 결과를 채워 넣는다.
+
+        Supervisor는 이미 `verification.isValid=False`인 경우 LLM 호출 없이
+        즉시 FAIL을 반환하므로(`supervisor.py`), 이 노드가 채우는 stub은
+        실제 채점에 쓰이지 않고 `EvalResult.evaluation`에 스킵 사실을
+        기록하는 용도다.
+
+        Args:
+            state: `verification`을 포함하는 현재 그래프 상태.
+
+        Returns:
+            상태에 병합될 `{"evaluation": <stub 딕셔너리>}`. stub은
+            `score=0.0`, `metrics={}`, `skipped=True`, `reason`(스킵 사유)을
+            포함한다.
+        """
+        reason = state["verification"].get(
+            "reason", "Verifier가 답변을 무효로 판정했습니다."
+        )
+        logger.info("evaluation_skipped reason=%s", reason)
+        return {
+            "evaluation": {
+                "score": 0.0,
+                "metrics": {},
+                "skipped": True,
+                "reason": reason,
+            }
+        }
 
     async def _evaluate(self, state: EvaluationState) -> Dict[str, Any]:
         """`evaluate` 노드: 현재 상태를 기반으로 EvaluatorAgent를 실행한다.
