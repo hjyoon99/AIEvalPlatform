@@ -58,6 +58,25 @@ export interface ReviewScenarioInput {
   rejectionReason?: string;
 }
 
+/** 사람이 시나리오 답변에 매긴 채점 결과다(`evaluationRubric.humanGrade`에 저장). */
+export interface HumanGrade {
+  score: number;
+  verdict: string;
+  perMetric: Record<string, number>;
+  gradedBy: string;
+  gradedAt: string;
+  source: 'manual' | 'review_escalation';
+}
+
+/** 시나리오에 사람 채점을 기록할 때 필요한 입력이다. */
+export interface GradeScenarioInput {
+  score: number;
+  verdict: string;
+  perMetric?: Record<string, number>;
+  gradedBy: string;
+  source?: 'manual' | 'review_escalation';
+}
+
 /** 기존 시나리오에서 부분 변경할 수 있는 필드다. */
 export interface UpdateScenarioInput {
   title?: string;
@@ -404,6 +423,64 @@ export class ProjectService {
   }
 
   /**
+   * 시나리오에 사람 채점 결과를 기록해 골든 데이터셋 후보로 만든다.
+   *
+   * `evaluationRubric`의 다른 필드(metrics, requiredConditions 등)는 보존한
+   * 채 `humanGrade`만 갱신하며, `updateScenario`와 달리 시나리오 검수 상태
+   * (status/reviewedAt)는 건드리지 않는다 — 채점은 시나리오 내용을 다시
+   * 검토 대상으로 만드는 "수정"이 아니기 때문이다.
+   *
+   * @param scenarioId - 채점할 시나리오 식별자
+   * @param input - 점수, 판정, 지표별 점수, 채점자 및 출처
+   * @returns `humanGrade`가 갱신된 시나리오 레코드
+   */
+  async gradeScenario(scenarioId: string, input: GradeScenarioInput) {
+    const scenario = await this.repository.findScenario(scenarioId);
+    if (!scenario) {
+      throw new NotFoundException('Scenario not found');
+    }
+    if (
+      typeof input?.score !== 'number' ||
+      Number.isNaN(input.score) ||
+      input.score < 0 ||
+      input.score > 1
+    ) {
+      throw new BadRequestException('score must be a number between 0 and 1');
+    }
+    if (!input?.verdict?.trim()) {
+      throw new BadRequestException('verdict is required');
+    }
+    if (!input?.gradedBy?.trim()) {
+      throw new BadRequestException('gradedBy is required');
+    }
+
+    const humanGrade: HumanGrade = {
+      score: input.score,
+      verdict: input.verdict.trim(),
+      perMetric: input.perMetric ?? {},
+      gradedBy: input.gradedBy.trim(),
+      gradedAt: new Date().toISOString(),
+      source: input.source ?? 'manual',
+    };
+
+    return this.repository.updateScenario(scenarioId, {
+      evaluationRubric: {
+        ...this.asRecord(scenario.evaluationRubric),
+        humanGrade,
+      } as unknown as Prisma.InputJsonValue,
+    });
+  }
+
+  /**
+   * `humanGrade`와 `testOutput`이 모두 있는 시나리오만 골든 케이스로 조회한다.
+   * @param projectId - 조회할 프로젝트 식별자
+   * @returns 최신순 골든 케이스 시나리오 목록
+   */
+  getGoldenScenarios(projectId: string) {
+    return this.repository.findGoldenScenarios(projectId);
+  }
+
+  /**
    * 존재하는 시나리오를 삭제한다.
    * @param scenarioId - 삭제할 시나리오 식별자
    * @returns 삭제된 식별자와 성공 여부
@@ -449,6 +526,18 @@ export class ProjectService {
     if (Math.abs(weightSum - 1) > 0.001) {
       throw new BadRequestException('Metric weights must add up to 1');
     }
+  }
+
+  /**
+   * JSON 값이 일반 객체일 때만 레코드로 취급하고, 아니면 빈 객체를 반환한다.
+   * @param value - Prisma에서 읽어온 JSON 값
+   * @returns 병합에 안전하게 사용할 수 있는 객체
+   */
+  private asRecord(value: Prisma.JsonValue): Record<string, unknown> {
+    if (!value || Array.isArray(value) || typeof value !== 'object') {
+      return {};
+    }
+    return value as Record<string, unknown>;
   }
 
   /**

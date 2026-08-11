@@ -188,7 +188,7 @@ export class EvalService {
   ) {
     this.validateAutomatedInput(input, dataset, policy);
     const cases = dataset!;
-    const executionMode = input.executionMode!;
+    const executionMode = input.executionMode;
     const application =
       executionMode === 'ADAPTER'
         ? await this.repository.findApplication(input.applicationId!)

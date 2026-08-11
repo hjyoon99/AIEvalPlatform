@@ -14,6 +14,7 @@ import type {
   CreateProjectInput,
   CreateScenarioInput,
   GenerateScenariosInput,
+  GradeScenarioInput,
   ReviewScenarioInput,
   UpdateScenarioInput,
 } from './project.service';
@@ -148,6 +149,16 @@ export class ProjectController {
   }
 
   /**
+   * `humanGrade`와 `testOutput`이 모두 있는 골든 케이스 시나리오만 조회한다.
+   * @param projectId - 조회할 프로젝트 식별자
+   * @returns 골든 케이스로 채점된 시나리오 목록
+   */
+  @Get('projects/:projectId/scenarios/golden')
+  getGoldenScenarios(@Param('projectId') projectId: string) {
+    return this.projectService.getGoldenScenarios(projectId);
+  }
+
+  /**
    * 생성된 시나리오의 승인 또는 반려 상태를 기록한다.
    * @param scenarioId - 검수할 시나리오 식별자
    * @param input - 승인·반려 상태와 선택적 반려 사유
@@ -173,6 +184,20 @@ export class ProjectController {
     @Body() input: UpdateScenarioInput,
   ) {
     return this.projectService.updateScenario(scenarioId, input);
+  }
+
+  /**
+   * 시나리오에 사람 채점 결과를 기록해 골든 데이터셋 후보로 만든다.
+   * @param scenarioId - 채점할 시나리오 식별자
+   * @param input - 점수, 판정, 지표별 점수, 채점자 및 출처
+   * @returns humanGrade가 갱신된 시나리오 정보
+   */
+  @Patch('scenarios/:scenarioId/grade')
+  gradeScenario(
+    @Param('scenarioId') scenarioId: string,
+    @Body() input: GradeScenarioInput,
+  ) {
+    return this.projectService.gradeScenario(scenarioId, input);
   }
 
   /**

@@ -99,6 +99,18 @@ export class ProjectRepository {
     return this.prisma.scenario.findUnique({ where: { id: scenarioId } });
   }
 
+  /** `evaluationRubric.humanGrade`와 `testOutput`이 모두 있는 시나리오만 조회한다. */
+  findGoldenScenarios(projectId: string) {
+    return this.prisma.scenario.findMany({
+      where: {
+        projectId,
+        testOutput: { not: null },
+        evaluationRubric: { path: ['humanGrade'], not: Prisma.DbNull },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
   updateScenario(scenarioId: string, data: Prisma.ScenarioUpdateInput) {
     return this.prisma.scenario.update({ where: { id: scenarioId }, data });
   }
