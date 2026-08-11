@@ -8,12 +8,18 @@
 
 ```mermaid
 flowchart LR
-    Input --> Verifier
-    Verifier --> Evaluator
+    Input --> Supervisor
+    Supervisor -->|다음 단계 결정| Verifier
+    Supervisor -->|검증 유효| Evaluator
+    Supervisor -->|검증 무효, LLM 호출 없음| SkipEvaluation[Skip Evaluation]
+    Verifier --> Supervisor
     Evaluator --> Supervisor
+    SkipEvaluation --> Supervisor
     Supervisor -->|RETRY| Evaluator
     Supervisor -->|PASS/FAIL| Result
 ```
+
+라우팅 권한은 `supervisor` 노드 하나에 집중되어 있다. 워커(`verify`/`evaluate`/`skip_evaluation`)는 실행이 끝나면 항상 `supervisor`로만 복귀하며 서로를 직접 호출하지 않는다. `supervisor`는 누적된 상태(`verification`/`evaluation`/`supervision`)를 보고 매번 `Command(goto=...)`로 다음 행동을 재판단한다.
 
 구현 위치:
 
@@ -49,7 +55,7 @@ apps/agent-engine/app/
 | `pass_threshold` | 실행 통과 기준 |
 | `judge_model` | 세 평가 에이전트가 실제 Ollama 호출에 사용할 모델 |
 
-그래프는 `START → verify → evaluate → supervise`로 시작한다. supervise 이후 verdict와 횟수에 따라 evaluate 또는 END로 이동한다.
+그래프는 `START → supervisor`로 시작한다. `supervisor`는 `verification`/`evaluation`/`supervision` 필드가 채워졌는지를 보고 `verify`, `evaluate`, `skip_evaluation`(검증 무효 시 Evaluator 호출 생략), `END` 중 다음 행동을 결정한다. Supervisor 판정이 RETRY이고 재시도 횟수가 한도 이내면 다시 `evaluate`로 라우팅한다.
 
 ## Executor
 

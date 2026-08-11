@@ -186,5 +186,6 @@ AutoGen이 나쁜 선택이라는 뜻은 아니다. 향후 “평가기준 자�
 - 현재 백엔드 호출은 동기식이다. 대규모 배치에서는 큐와 Worker로 분리해야 한다.
 - 모든 에이전트가 기본적으로 같은 모델을 사용한다. 역할별 모델 라우팅이 가능하다.
 - 단일 Supervisor 판정이므로 다중 Judge 합의나 통계적 분산 측정은 아직 없다.
+- "Judge"라는 이름은 이미 Backend의 `JudgeJob`/`JudgeWorker`(Agent Engine 전체 호출 1건을 감싸는 백엔드 큐 테이블/워커, `apps/backend/prisma/schema.prisma`)가 시스템 레벨에서 쓰고 있다. 향후 위 다중 모델 합의 로직을 노드로 추가할 때 `judge_*`로 명명하면 이 시스템 레벨 개념과 혼동되므로, `consensus_evaluator`/`aggregate_consensus`처럼 별도로 명명한다.
 - 인증과 프로젝트별 권한 모델은 아직 구현하지 않았다.
 - 프롬프트 및 모델 버전은 결과에 완전한 형태로 저장되지 않는다. 운영 재현성을 위해 추가가 필요하다.
