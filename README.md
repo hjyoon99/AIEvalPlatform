@@ -58,17 +58,29 @@ AI 에이전트의 답변 몇 개를 사람이 읽어 보는 것만으로 품질
 
 ```mermaid
 flowchart LR
-    A[질문과 대상 답변] --> V[Verifier<br/>평가 가능성 검증]
-    V --> E[Evaluator<br/>지표별 채점과 근거]
-    E --> S[Supervisor<br/>결과 일관성 감사]
-    S -->|RETRY| E
-    S -->|PASS / FAIL| R[결과 저장]
+    Input[질문과 대상 답변] --> Supervisor
+    Supervisor -->|다음 단계 결정| Verifier
+    Supervisor -->|검증 유효, RAG 유형| Groundedness[Groundedness Check]
+    Supervisor -->|검증 유효, 도구호출 유형| ToolCall[Tool Call Check]
+    Supervisor -->|검증 유효| Evaluator
+    Supervisor -->|검증 무효, LLM 호출 없음| Skip[Skip Evaluation]
+    Verifier --> Supervisor
+    Groundedness --> Supervisor
+    ToolCall --> Supervisor
+    Evaluator --> Supervisor
+    Skip --> Supervisor
+    Supervisor -->|RETRY| Evaluator
+    Supervisor -->|PASS / FAIL| R[결과 저장]
 ```
+
+라우팅 권한은 Supervisor 하나에 집중되어 있습니다. 각 워커는 실행이 끝나면 항상 Supervisor로 복귀하고, Supervisor는 그때마다 상태를 보고 다음 단계를 다시 결정합니다. 검증이 유효하면 답변의 `retrievedDocuments`/`toolCalls` 메타데이터 유무만 보는 순수 코드 함수가 RAG/도구호출 유형을 판별해 해당 체크를 먼저 거치게 하며, 메타데이터가 없으면 기존과 동일하게 바로 Evaluator로 진행합니다(LLM 호출 없음).
 
 - **Executor**: 대상 답변이 제공되지 않은 경우 답변을 생성합니다.
 - **Verifier**: 빈 답변, 손상된 출력, 질문과 무관하거나 유해한 답변을 걸러냅니다.
+- **Groundedness Check**: RAG 유형(근거 문서 인용) 답변의 각 주장이 실제로 근거 문서로 뒷받침되는지 검증합니다.
+- **Tool Call Check**: 도구 호출이 포함된 답변에서 호출 파라미터가 질문 의도에 맞고 불필요하지 않은지 검증합니다.
 - **Evaluator**: 정책과 시나리오 루브릭에 따라 지표별 점수와 사유를 만듭니다.
-- **Supervisor**: 앞선 결과의 일관성을 확인하고 `PASS`, `FAIL`, `RETRY`를 결정합니다.
+- **Supervisor**: 라우팅 허브 역할을 겸하며, 최종적으로 앞선 결과의 일관성을 확인해 `PASS`, `FAIL`, `RETRY`를 결정합니다.
 
 재시도는 원본 답변을 다시 생성하는 과정이 아니라, Supervisor의 피드백으로 동일 답변의 채점을 재검토하는 과정입니다.
 
@@ -92,7 +104,6 @@ Dashboard에서 전체 실행 수, 평균 점수, 통과율과 실행 상태를 
 
 - Docker와 Docker Compose
 - [Ollama](https://ollama.com/)와 기본 Judge 모델 `qwen3.5:4b`
-- 로컬에서 개별 실행할 경우 Node.js 22+, pnpm 11.18.0, Python 3.11+
 
 ### 1. 모델 준비
 
@@ -171,8 +182,10 @@ flowchart LR
 | Ollama | 호스트 runtime | 로컬 LLM 추론 |
 - **Executor**: 출력이 없으면 테스트 대상 답변을 생성한다.
 - **Verifier**: 답변이 비어 있거나 깨졌는지, 질문과 무관하거나 유해한지 확인한다.
+- **Groundedness Check**: RAG 유형 답변의 주장이 근거 문서로 뒷받침되는지 확인한다.
+- **Tool Call Check**: 도구 호출 답변의 파라미터가 질문 의도에 맞고 불필요하지 않은지 확인한다.
 - **Evaluator**: 정책과 루브릭에 따라 지표별 점수와 근거를 만든다.
-- **Supervisor**: 검증과 평가 결과의 일관성을 확인하고 PASS, FAIL 또는 RETRY를 결정한다.
+- **Supervisor**: 라우팅 허브 역할을 겸하며, 검증과 평가 결과의 일관성을 확인하고 PASS, FAIL 또는 RETRY를 결정한다.
 
 <img width="1367" height="673" alt="image" src="https://github.com/user-attachments/assets/4847b621-a364-403e-b41e-771f5b43d4be" />
 
@@ -289,26 +302,23 @@ Backend의 Judge Worker는 준비된 답변을 평가 큐에서 가져가 Agent 
 
 ## 개발 명령
 
-Docker 없이 각 서비스를 개발 모드로 실행하려면 의존성을 먼저 설치합니다.
+서비스 코드를 수정한 뒤에는 해당 서비스만 다시 빌드하고 재시작합니다. 나머지 컨테이너는 그대로 유지됩니다.
 
 ```bash
-pnpm install
-pnpm dev:backend
-pnpm dev:dashboard
+docker compose up -d --build backend
+docker compose up -d --build agent-engine
+docker compose up -d --build dashboard
 ```
 
-Agent Engine은 별도 Python 환경에서 실행합니다.
+특정 서비스의 로그만 실시간으로 보려면:
 
 ```bash
-cd apps/agent-engine
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
+docker compose logs -f backend
 ```
 
-전체 TypeScript 애플리케이션 빌드:
+캐시를 쓰지 않고 전체 이미지를 처음부터 다시 빌드하려면:
 
 ```bash
-pnpm build
+docker compose build --no-cache
+docker compose up -d
 ```
