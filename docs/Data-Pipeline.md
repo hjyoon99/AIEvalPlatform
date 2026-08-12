@@ -158,16 +158,22 @@ flowchart TD
     Q -->|예| SUP
     EX --> SUP
     SUP{Supervisor 허브} -->|다음 단계 결정| V[Verifier]
+    SUP -->|검증 유효, RAG 유형| GC[Groundedness Check]
+    SUP -->|검증 유효, 도구호출 유형| TC[Tool Call Check]
     SUP -->|검증 유효| EV[Evaluator]
     SUP -->|검증 무효, LLM 호출 없음| SK[Skip Evaluation]
     V --> SUP
+    GC --> SUP
+    TC --> SUP
     EV --> SUP
     SK --> SUP
     SUP -->|RETRY| EV
     SUP -->|PASS/FAIL| OUT[Result Payload]
 ```
 
-dataset 항목은 순차적으로 처리된다. 각 항목마다 검증, 평가와 감독 결과를 만든 뒤 results 배열에 추가한다. 라우팅 권한은 `Supervisor` 허브 노드 하나에 집중되어 있고, `Verifier`/`Evaluator`/`Skip Evaluation`은 실행 후 항상 `Supervisor`로만 복귀한다.
+dataset 항목은 순차적으로 처리된다. 각 항목마다 검증, 평가와 감독 결과를 만든 뒤 results 배열에 추가한다. 라우팅 권한은 `Supervisor` 허브 노드 하나에 집중되어 있고, `Verifier`/`Evaluator`/`Skip Evaluation`/`Groundedness Check`/`Tool Call Check`는 실행 후 항상 `Supervisor`로만 복귀한다.
+
+`Verifier` 검증이 유효하면 dataset item의 `metadata`(`retrievedDocuments`/`toolCalls`)만 보는 순수 코드 함수가 답변 유형을 판별해 RAG면 `Groundedness Check`, 도구호출이면 `Tool Call Check`를 먼저 거치게 한다(LLM 호출 없음). 메타데이터가 없으면 "일반" 유형으로 바로 `Evaluator`로 간다. 두 체크는 아직 결과를 저장만 하는 stub이며, 실제 검증 로직은 별도 이슈에서 구현된다.
 
 > **용어 주의**: 위 다이어그램의 `Supervisor`는 Agent Engine 그래프 안의 라우팅 허브 노드이며, Backend의 `JudgeJob`/`JudgeWorker`(Agent Engine 전체 호출 1건을 감싸는 큐 테이블/워커)와는 다른 개념이다. 향후 이 흐름에 다중 모델 합의(consensus) 노드를 추가할 때는 `consensus_evaluator`/`aggregate_consensus`로 명명하고, `JudgeJob`/`JudgeWorker`가 이미 쓰고 있는 `judge_*` 접두어는 쓰지 않는다.
 

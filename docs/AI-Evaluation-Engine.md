@@ -10,16 +10,22 @@
 flowchart LR
     Input --> Supervisor
     Supervisor -->|다음 단계 결정| Verifier
+    Supervisor -->|검증 유효, RAG 유형| Groundedness[Groundedness Check]
+    Supervisor -->|검증 유효, 도구호출 유형| ToolCall[Tool Call Check]
     Supervisor -->|검증 유효| Evaluator
     Supervisor -->|검증 무효, LLM 호출 없음| SkipEvaluation[Skip Evaluation]
     Verifier --> Supervisor
+    Groundedness --> Supervisor
+    ToolCall --> Supervisor
     Evaluator --> Supervisor
     SkipEvaluation --> Supervisor
     Supervisor -->|RETRY| Evaluator
     Supervisor -->|PASS/FAIL| Result
 ```
 
-라우팅 권한은 `supervisor` 노드 하나에 집중되어 있다. 워커(`verify`/`evaluate`/`skip_evaluation`)는 실행이 끝나면 항상 `supervisor`로만 복귀하며 서로를 직접 호출하지 않는다. `supervisor`는 누적된 상태(`verification`/`evaluation`/`supervision`)를 보고 매번 `Command(goto=...)`로 다음 행동을 재판단한다.
+라우팅 권한은 `supervisor` 노드 하나에 집중되어 있다. 워커(`verify`/`evaluate`/`skip_evaluation`/`groundedness_check`/`tool_call_check`)는 실행이 끝나면 항상 `supervisor`로만 복귀하며 서로를 직접 호출하지 않는다. `supervisor`는 누적된 상태(`verification`/`evaluation`/`supervision`)를 보고 매번 `Command(goto=...)`로 다음 행동을 재판단한다.
+
+검증이 유효하면 `output_metadata`(`retrievedDocuments`/`toolCalls`)만 보는 순수 코드 함수 `classify_answer_type`이 답변 유형을 판별해 RAG면 `groundedness_check`, 도구호출이면 `tool_call_check`를 먼저 거치게 한다(LLM 호출 없음). 메타데이터가 없으면 "일반" 유형으로 처리되어 기존과 동일하게 바로 `evaluate`로 간다. 두 체크 노드는 현재 결과를 state에 남기기만 하는 stub이며, 실제 검증 로직은 각각 groundedness_check(#20)/tool_call_check(#21)에서 구현된다.
 
 구현 위치:
 
@@ -54,8 +60,11 @@ apps/agent-engine/app/
 | `max_retries` | 허용 재평가 횟수 |
 | `pass_threshold` | 실행 통과 기준 |
 | `judge_model` | 세 평가 에이전트가 실제 Ollama 호출에 사용할 모델 |
+| `output_metadata` | 답변 유형 분류용 `retrievedDocuments`/`toolCalls`(선택) |
+| `groundedness_result` | groundedness_check 결과. RAG 유형이 아니거나 실행 전이면 `None` |
+| `tool_call_result` | tool_call_check 결과. 도구호출 유형이 아니거나 실행 전이면 `None` |
 
-그래프는 `START → supervisor`로 시작한다. `supervisor`는 `verification`/`evaluation`/`supervision` 필드가 채워졌는지를 보고 `verify`, `evaluate`, `skip_evaluation`(검증 무효 시 Evaluator 호출 생략), `END` 중 다음 행동을 결정한다. Supervisor 판정이 RETRY이고 재시도 횟수가 한도 이내면 다시 `evaluate`로 라우팅한다.
+그래프는 `START → supervisor`로 시작한다. `supervisor`는 `verification`/`evaluation`/`supervision` 필드가 채워졌는지를 보고 `verify`, `groundedness_check`/`tool_call_check`(검증 유효 시 `classify_answer_type` 판별 결과에 따라), `evaluate`, `skip_evaluation`(검증 무효 시 Evaluator 호출 생략), `END` 중 다음 행동을 결정한다. Supervisor 판정이 RETRY이고 재시도 횟수가 한도 이내면 다시 `evaluate`로 라우팅한다.
 
 ## Executor
 

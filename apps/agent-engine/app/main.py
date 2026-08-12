@@ -219,6 +219,11 @@ async def run_evaluation_pipeline(request: EvalRequest):
                 if request.agentPrompts
                 else {}
             ),
+            output_metadata=(
+                item.metadata.model_dump(exclude_none=True)
+                if item.metadata
+                else None
+            ),
         )
 
         verification = graph_result["verification"]

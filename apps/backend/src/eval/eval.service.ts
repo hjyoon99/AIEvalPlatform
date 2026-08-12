@@ -4,11 +4,12 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { EvalRepository, type EvalPolicyRecord } from './eval.repository';
+import { EvalRepository } from './eval.repository';
 import type {
   EvalDatasetItemInput,
   StartEvalRunInput,
 } from './dto/create-eval-run.dto';
+import type { EvalPolicyRecord } from './eval.types';
 
 @Injectable()
 export class EvalService {
