@@ -92,6 +92,7 @@ class EvaluatorAgent:
         pass_threshold: float = 0.7,
         model: Optional[str] = None,
         groundedness_result: Optional[Dict[str, Any]] = None,
+        tool_call_result: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """AI 에이전트 답변을 지표별로 채점하고 가중 평균 점수를 산출한다.
 
@@ -113,6 +114,9 @@ class EvaluatorAgent:
             groundedness_result: `GroundednessAgent.run` 결과(RAG 유형
                 답변에만 존재). `grounded=False`이면 뒷받침되지 않는 주장
                 목록을 채점 프롬프트에 감점 참고 신호로 포함한다.
+            tool_call_result: `ToolCallCheckAgent.run` 결과(도구호출 유형
+                답변에만 존재). `valid=False`이면 발견된 문제 목록을 채점
+                프롬프트에 감점 참고 신호로 포함한다.
 
         Returns:
             다음 키를 포함하는 딕셔너리:
@@ -150,6 +154,19 @@ class EvaluatorAgent:
                 "\n### 근거 충실성 검증 결과:\n"
                 f"이 답변은 근거 문서로 뒷받침되지 않는 주장을 포함합니다: {claims_text}\n"
                 "이를 사실 정확성 등 관련 지표의 감점 요소로 고려하세요.\n"
+            )
+        if tool_call_result and not tool_call_result.get("valid", True):
+            issues = tool_call_result.get("issues", [])
+            issues_text = "; ".join(
+                f"{issue.get('toolName')}({issue.get('issue')}: {issue.get('reason')})"
+                if isinstance(issue, dict)
+                else str(issue)
+                for issue in issues
+            )
+            user_content += (
+                "\n### 도구 호출 검증 결과:\n"
+                f"이 답변의 도구 호출에서 다음 문제가 발견되었습니다: {issues_text}\n"
+                "이를 관련 지표의 감점 요소로 고려하세요.\n"
             )
 
         active_criteria = criteria or [

@@ -49,6 +49,27 @@ class FakeGroundedness:
         }
 
 
+class FakeToolCall:
+    def __init__(
+        self,
+        valid: bool = True,
+        issues: Optional[List[Dict[str, Any]]] = None,
+        confidence: float = 0.9,
+    ):
+        self.valid = valid
+        self.issues = issues or []
+        self.confidence = confidence
+        self.calls = 0
+
+    async def run(self, **kwargs) -> Dict[str, Any]:
+        self.calls += 1
+        return {
+            "valid": self.valid,
+            "issues": self.issues,
+            "confidence": self.confidence,
+        }
+
+
 class FakeSupervisor:
     """Verifier가 무효 판정을 내리면 LLM 호출 없이 즉시 FAIL을 반환하는
     실제 SupervisorAgent의 규칙 기반 단축 로직을 흉내 낸 테스트 대역."""
@@ -97,6 +118,7 @@ async def test_invalid_verification_skips_evaluator_and_stubs_evaluation():
         evaluator=evaluator,
         supervisor=supervisor,
         groundedness=FakeGroundedness(),
+        tool_call=FakeToolCall(),
     )
 
     result = await workflow.run(prompt="질문", output="")
@@ -121,6 +143,7 @@ async def test_valid_verification_still_calls_evaluator():
         evaluator=evaluator,
         supervisor=supervisor,
         groundedness=FakeGroundedness(),
+        tool_call=FakeToolCall(),
     )
 
     result = await workflow.run(prompt="질문", output="괜찮은 답변", pass_threshold=0.7)
@@ -138,6 +161,7 @@ def test_workers_only_connect_through_supervisor():
         evaluator=FakeEvaluator(),
         supervisor=FakeSupervisor(),
         groundedness=FakeGroundedness(),
+        tool_call=FakeToolCall(),
     )
 
     workers = {
@@ -165,6 +189,7 @@ async def test_rag_metadata_routes_through_groundedness_check():
         evaluator=evaluator,
         supervisor=supervisor,
         groundedness=groundedness,
+        tool_call=FakeToolCall(),
     )
 
     result = await workflow.run(
@@ -198,6 +223,7 @@ async def test_ungrounded_result_still_reaches_evaluator():
         evaluator=evaluator,
         supervisor=supervisor,
         groundedness=groundedness,
+        tool_call=FakeToolCall(),
     )
 
     result = await workflow.run(
@@ -216,24 +242,64 @@ async def test_tool_call_metadata_routes_through_tool_call_check():
     verifier = FakeVerifier(is_valid=True)
     evaluator = FakeEvaluator(score=0.9)
     supervisor = FakeSupervisor()
+    tool_call = FakeToolCall(valid=True)
     workflow = EvaluationWorkflow(
         verifier=verifier,
         evaluator=evaluator,
         supervisor=supervisor,
         groundedness=FakeGroundedness(),
+        tool_call=tool_call,
     )
 
     result = await workflow.run(
         prompt="질문",
         output="도구를 호출한 답변",
         pass_threshold=0.7,
-        output_metadata={"toolCalls": [{"name": "search"}]},
+        output_metadata={"toolCalls": [{"name": "search", "arguments": {"q": "날씨"}}]},
     )
 
-    assert result["tool_call_result"]["checked"] is False
+    assert tool_call.calls == 1
+    assert result["tool_call_result"]["valid"] is True
     assert result.get("groundedness_result") is None
     assert evaluator.calls == 1
+    assert evaluator.received_kwargs.get("tool_call_result") == result["tool_call_result"]
     assert result["supervision"]["verdict"] == "PASS"
+
+
+@pytest.mark.asyncio
+async def test_invalid_tool_call_result_still_reaches_evaluator():
+    """tool_call_check가 valid=False를 내도 evaluate로 계속 진행되고,
+    그 결과가 EvaluatorAgent.run()에 그대로 전달된다(감점 참고 신호로 반영하기 위함)."""
+    verifier = FakeVerifier(is_valid=True)
+    evaluator = FakeEvaluator(score=0.9)
+    supervisor = FakeSupervisor()
+    tool_call = FakeToolCall(
+        valid=False,
+        issues=[
+            {
+                "toolName": "get_weather",
+                "issue": "invalid_parameter",
+                "reason": "질문은 서울 날씨인데 도쿄로 조회함",
+            }
+        ],
+    )
+    workflow = EvaluationWorkflow(
+        verifier=verifier,
+        evaluator=evaluator,
+        supervisor=supervisor,
+        groundedness=FakeGroundedness(),
+        tool_call=tool_call,
+    )
+
+    result = await workflow.run(
+        prompt="질문",
+        output="도구를 호출한 답변",
+        pass_threshold=0.7,
+        output_metadata={"toolCalls": [{"name": "get_weather", "arguments": {"city": "도쿄"}}]},
+    )
+
+    assert result["tool_call_result"]["valid"] is False
+    assert evaluator.received_kwargs.get("tool_call_result") == result["tool_call_result"]
 
 
 @pytest.mark.asyncio
@@ -247,6 +313,7 @@ async def test_no_metadata_skips_both_checks():
         evaluator=evaluator,
         supervisor=supervisor,
         groundedness=FakeGroundedness(),
+        tool_call=FakeToolCall(),
     )
 
     result = await workflow.run(
@@ -269,6 +336,7 @@ async def test_retry_loop_still_calls_evaluator_again():
         evaluator=evaluator,
         supervisor=supervisor,
         groundedness=FakeGroundedness(),
+        tool_call=FakeToolCall(),
     )
 
     result = await workflow.run(
