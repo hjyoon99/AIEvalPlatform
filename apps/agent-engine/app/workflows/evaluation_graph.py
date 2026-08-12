@@ -1,10 +1,16 @@
 import logging
-from typing import Any, Dict, List, Optional, TypedDict
+from typing import Any, Dict, List, Literal, Optional, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
-from app.agents import EvaluatorAgent, SupervisorAgent, VerifierAgent
+from app.agents import (
+    EvaluatorAgent,
+    GroundednessAgent,
+    SupervisorAgent,
+    ToolCallCheckAgent,
+    VerifierAgent,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +35,13 @@ class EvaluationState(TypedDict, total=False):
         criteria: 사용자 정의 평가 지표 목록.
         agent_prompts: 에이전트별(verifier/evaluator/supervisor) 커스텀
             시스템 프롬프트 딕셔너리.
+        output_metadata: 답변 유형(RAG/도구호출/일반) 분류에 쓰이는 부가
+            정보(`retrievedDocuments`/`toolCalls`). 없으면 "일반" 유형으로
+            처리된다.
+        groundedness_result: `groundedness_check` 결과. RAG 유형이 아니거나
+            아직 실행 전이면 `None`.
+        tool_call_result: `tool_call_check` 결과. 도구호출 유형이 아니거나
+            아직 실행 전이면 `None`.
     """
 
     prompt: str
@@ -44,16 +57,29 @@ class EvaluationState(TypedDict, total=False):
     judge_model: str
     criteria: List[Dict[str, Any]]
     agent_prompts: Dict[str, str]
+    output_metadata: Dict[str, Any]
+    groundedness_result: Optional[Dict[str, Any]]
+    tool_call_result: Optional[Dict[str, Any]]
 
 
 class EvaluationWorkflow:
-    """`supervisor`를 허브로 두고 워커(verify/evaluate/skip_evaluation)를
-    호출하는 LangGraph 워크플로.
+    """`supervisor`를 허브로 두고 워커(verify/evaluate/skip_evaluation/
+    groundedness_check/tool_call_check)를 호출하는 LangGraph 워크플로.
 
     라우팅 권한은 전부 `supervisor` 노드 하나에 집중된다. 워커 노드는
     실행이 끝나면 항상 `supervisor`로만 복귀하며 서로를 직접 호출하지
     않는다. `supervisor`는 누적된 상태(`verification`/`evaluation`/
     `supervision`)를 보고 매번 다음 행동을 `Command(goto=...)`로 결정한다.
+
+    검증이 유효하면 `_classify_answer_type`(LLM 호출 없는 순수 코드
+    판별)이 `output_metadata`를 보고 답변 유형을 정하고, RAG 유형이면
+    `groundedness_check`, 도구호출 유형이면 `tool_call_check`를 먼저
+    거친 뒤 `evaluate`로 넘어간다. 메타데이터가 없으면 기존과 동일하게
+    바로 `evaluate`로 간다. `groundedness_check`는 `GroundednessAgent`로
+    근거 충실성을, `tool_call_check`는 `ToolCallCheckAgent`로 도구 호출의
+    파라미터 타당성/필요성을 검증한다. 결과가 부정적(`grounded=False`
+    또는 `valid=False`)이면 `evaluate` 채점 프롬프트에 감점 참고 신호로
+    전달된다.
 
     실제 판정(PASS/FAIL/RETRY)은 `SupervisorAgent`(LLM)가 내리지만, 그
     판정을 실제 노드 이동으로 바꾸는 라우팅 자체는 코드가 제한된 enum
@@ -73,21 +99,29 @@ class EvaluationWorkflow:
         verifier: VerifierAgent,
         evaluator: EvaluatorAgent,
         supervisor: SupervisorAgent,
+        groundedness: GroundednessAgent,
+        tool_call: ToolCallCheckAgent,
     ):
-        """세 에이전트를 주입받아 LangGraph 상태 그래프를 컴파일한다.
+        """다섯 에이전트를 주입받아 LangGraph 상태 그래프를 컴파일한다.
 
         Args:
             verifier: 1차 유효성/안전성 검증을 수행하는 `VerifierAgent`.
             evaluator: 지표 기반 채점을 수행하는 `EvaluatorAgent`.
             supervisor: 최종 PASS/FAIL/RETRY 판정을 내리는 `SupervisorAgent`.
+            groundedness: RAG 답변의 근거 충실성을 검증하는 `GroundednessAgent`.
+            tool_call: 도구 호출의 파라미터 타당성/필요성을 검증하는
+                `ToolCallCheckAgent`.
 
         Attributes set:
-            verifier, evaluator, supervisor: 주입된 각 에이전트 인스턴스.
+            verifier, evaluator, supervisor, groundedness, tool_call:
+                주입된 각 에이전트 인스턴스.
             graph: `_build_graph`로 컴파일된 실행 가능한 LangGraph 그래프.
         """
         self.verifier = verifier
         self.evaluator = evaluator
         self.supervisor = supervisor
+        self.groundedness = groundedness
+        self.tool_call = tool_call
         self.graph = self._build_graph()
 
     def _build_graph(self):
@@ -95,24 +129,36 @@ class EvaluationWorkflow:
 
         Returns:
             `START -> supervisor`로 시작하는 컴파일된 LangGraph 실행 그래프.
-            `verify`/`evaluate`/`skip_evaluation` 워커는 실행 후 고정 엣지로
-            무조건 `supervisor`로만 복귀하며, `supervisor`는 매번 상태를 보고
+            `verify`/`evaluate`/`skip_evaluation`/`groundedness_check`/
+            `tool_call_check` 워커는 실행 후 고정 엣지로 무조건
+            `supervisor`로만 복귀하며, `supervisor`는 매번 상태를 보고
             `Command(goto=...)`로 다음 워커(또는 `END`)를 결정한다.
         """
         builder = StateGraph(EvaluationState)
         builder.add_node(
             "supervisor",
             self._supervisor_node,
-            destinations=("verify", "evaluate", "skip_evaluation", END),
+            destinations=(
+                "verify",
+                "evaluate",
+                "skip_evaluation",
+                "groundedness_check",
+                "tool_call_check",
+                END,
+            ),
         )
         builder.add_node("verify", self._verify)
         builder.add_node("evaluate", self._evaluate)
         builder.add_node("skip_evaluation", self._skip_evaluation)
+        builder.add_node("groundedness_check", self._groundedness_check)
+        builder.add_node("tool_call_check", self._tool_call_check)
 
         builder.add_edge(START, "supervisor")
         builder.add_edge("verify", "supervisor")
         builder.add_edge("evaluate", "supervisor")
         builder.add_edge("skip_evaluation", "supervisor")
+        builder.add_edge("groundedness_check", "supervisor")
+        builder.add_edge("tool_call_check", "supervisor")
         return builder.compile()
 
     async def _verify(self, state: EvaluationState) -> Dict[str, Any]:
@@ -132,6 +178,75 @@ class EvaluationWorkflow:
             model=state["judge_model"],
         )
         return {"verification": verification}
+
+    @staticmethod
+    def _classify_answer_type(
+        state: EvaluationState,
+    ) -> Literal["rag", "tool_call", "general"]:
+        """`output_metadata`만 보고 답변 유형을 판별하는 순수 코드 함수. LLM 호출 없음.
+
+        `retrievedDocuments`와 `toolCalls`가 모두 있으면 RAG 검증을
+        우선한다. 필드가 없거나 빈 값이면 "일반" 유형으로 처리해
+        메타데이터가 없는 기존 요청도 에러 없이 동작하도록 한다.
+
+        Args:
+            state: `output_metadata`를 포함하는 현재 그래프 상태.
+
+        Returns:
+            `"rag"`, `"tool_call"`, `"general"` 중 하나.
+        """
+        metadata = state.get("output_metadata") or {}
+        if metadata.get("retrievedDocuments"):
+            return "rag"
+        if metadata.get("toolCalls"):
+            return "tool_call"
+        return "general"
+
+    async def _groundedness_check(self, state: EvaluationState) -> Dict[str, Any]:
+        """`groundedness_check` 노드: RAG 답변의 근거 충실성을 검증한다.
+
+        `output_metadata.retrievedDocuments`를 근거로 `GroundednessAgent`를
+        실행해 답변의 각 주장이 실제로 뒷받침되는지 판단한다. 결과는
+        `evaluate` 단계의 채점 프롬프트에 감점 참고 신호로 전달된다.
+
+        Args:
+            state: `output_metadata`를 포함하는 현재 그래프 상태.
+
+        Returns:
+            상태에 병합될 `{"groundedness_result": <GroundednessAgent.run 결과>}`.
+        """
+        metadata = state.get("output_metadata") or {}
+        result = await self.groundedness.run(
+            prompt=state["prompt"],
+            output=state["output"],
+            retrieved_documents=metadata.get("retrievedDocuments"),
+            system_prompt=state.get("agent_prompts", {}).get("groundedness"),
+            model=state["judge_model"],
+        )
+        return {"groundedness_result": result}
+
+    async def _tool_call_check(self, state: EvaluationState) -> Dict[str, Any]:
+        """`tool_call_check` 노드: 도구 호출의 파라미터 타당성/필요성을 검증한다.
+
+        `output_metadata.toolCalls`를 근거로 `ToolCallCheckAgent`를 실행해
+        각 도구 호출이 질문 의도에 비춰 타당했는지 판단한다. 결과는
+        `evaluate` 단계의 채점 프롬프트에 감점 참고 신호로 전달된다.
+
+        Args:
+            state: `output_metadata`를 포함하는 현재 그래프 상태.
+
+        Returns:
+            상태에 병합될 `{"tool_call_result": <ToolCallCheckAgent.run 결과>}`.
+        """
+        metadata = state.get("output_metadata") or {}
+        result = await self.tool_call.run(
+            prompt=state["prompt"],
+            output=state["output"],
+            tool_calls=metadata.get("toolCalls"),
+            system_prompt=state.get("agent_prompts", {}).get("toolCall"),
+            model=state["judge_model"],
+        )
+        return {"tool_call_result": result}
 
     async def _skip_evaluation(self, state: EvaluationState) -> Dict[str, Any]:
         """`skip_evaluation` 노드: Verifier가 무효 판정을 내렸을 때 EvaluatorAgent
@@ -168,6 +283,9 @@ class EvaluationWorkflow:
 
         재평가(RETRY) 루프로 재진입한 경우 `state["supervisor_feedback"]`가
         평가 프롬프트에 함께 전달되어 이전과 독립적으로 다시 채점하도록 한다.
+        `groundedness_check`/`tool_call_check`를 거친 답변이면 그 결과도
+        함께 전달되어 근거 없는 주장/부적절한 도구 호출이 감점 참고
+        신호로 반영된다.
 
         Args:
             state: 최소한 `prompt`, `output`, `pass_threshold`, `judge_model`을
@@ -185,6 +303,8 @@ class EvaluationWorkflow:
             system_prompt=state.get("agent_prompts", {}).get("evaluator"),
             pass_threshold=state["pass_threshold"],
             model=state["judge_model"],
+            groundedness_result=state.get("groundedness_result"),
+            tool_call_result=state.get("tool_call_result"),
         )
         return {"evaluation": evaluation}
 
@@ -205,14 +325,23 @@ class EvaluationWorkflow:
                 `prompt`, `output`, `judge_model` 등을 포함하는 현재 그래프 상태.
 
         Returns:
-            다음으로 이동할 노드(`verify`/`evaluate`/`skip_evaluation`/`END`)와
-            상태 갱신 내용을 담은 `Command`.
+            다음으로 이동할 노드(`verify`/`groundedness_check`/
+            `tool_call_check`/`evaluate`/`skip_evaluation`/`END`)와 상태
+            갱신 내용을 담은 `Command`.
         """
         if state.get("verification") is None:
             return Command(goto="verify")
 
+        verification = state["verification"]
+        if verification.get("isValid", False):
+            answer_type = self._classify_answer_type(state)
+            if answer_type == "rag" and state.get("groundedness_result") is None:
+                return Command(goto="groundedness_check")
+            if answer_type == "tool_call" and state.get("tool_call_result") is None:
+                return Command(goto="tool_call_check")
+
         if state.get("evaluation") is None:
-            target = "evaluate" if state["verification"].get("isValid", False) else "skip_evaluation"
+            target = "evaluate" if verification.get("isValid", False) else "skip_evaluation"
             return Command(goto=target)
 
         if state.get("supervision") is None:
@@ -257,6 +386,7 @@ class EvaluationWorkflow:
         judge_model: str = "qwen3.5:4b",
         criteria: Optional[List[Dict[str, Any]]] = None,
         agent_prompts: Optional[Dict[str, str]] = None,
+        output_metadata: Optional[Dict[str, Any]] = None,
     ) -> EvaluationState:
         """초기 상태를 구성하여 supervisor 허브 그래프를 실행한다.
 
@@ -271,6 +401,9 @@ class EvaluationWorkflow:
             criteria: 사용자 정의 평가 지표 목록. 생략 시 빈 목록.
             agent_prompts: 에이전트별 커스텀 시스템 프롬프트 딕셔너리.
                 생략 시 빈 딕셔너리.
+            output_metadata: 답변 유형(RAG/도구호출/일반) 분류에 쓰이는
+                `retrievedDocuments`/`toolCalls` 등 부가 정보(선택). 생략
+                시 "일반" 유형으로 처리된다.
 
         Returns:
             그래프 실행이 끝난 뒤의 최종 `EvaluationState`
@@ -287,5 +420,6 @@ class EvaluationWorkflow:
                 "judge_model": judge_model,
                 "criteria": criteria or [],
                 "agent_prompts": agent_prompts or {},
+                "output_metadata": output_metadata or {},
             }
         )

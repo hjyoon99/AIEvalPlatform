@@ -1,6 +1,6 @@
 import { Body, Controller, Delete, Get, Param, Post } from '@nestjs/common';
 import { EvalService } from './eval.service';
-import type { StartEvalRunInput } from './eval.service';
+import type { StartEvalRunInput } from './dto/create-eval-run.dto';
 
 @Controller('eval-runs')
 export class EvalController {

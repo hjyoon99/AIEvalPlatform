@@ -4,40 +4,12 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { EvalRepository, type EvalPolicyRecord } from './eval.repository';
-
-/** 평가할 단일 질의·응답과 기대 조건 및 채점 기준이다. */
-export interface EvalDatasetItemInput {
-  id?: string;
-  prompt: string;
-  output?: string;
-  expectedOutput?: string;
-  variables?: Record<string, unknown>;
-  context?: unknown[];
-  expectedBehavior?: string[];
-  requiredConditions?: string[];
-  failConditions?: string[];
-  allowedVariations?: string[];
-  criteria?: Record<string, unknown>[];
-}
-
-/** 평가 실행 생성 방식, 모델, 정책, 데이터셋을 정의하는 요청 계약이다. */
-export interface StartEvalRunInput {
-  projectId?: string;
-  policyId?: string;
-  scenarioIds?: string[];
-  applicationId?: string;
-  executionMode: 'ADAPTER' | 'PROVIDED_OUTPUT';
-  name: string;
-  agentName?: string;
-  targetModel?: string;
-  judgeModel?: string;
-  passThreshold?: number;
-  maxRetries?: number;
-  timeoutMs?: number;
-  maxAttempts?: number;
-  dataset?: EvalDatasetItemInput[];
-}
+import { EvalRepository } from './eval.repository';
+import type {
+  EvalDatasetItemInput,
+  StartEvalRunInput,
+} from './dto/create-eval-run.dto';
+import type { EvalPolicyRecord } from './eval.types';
 
 @Injectable()
 export class EvalService {

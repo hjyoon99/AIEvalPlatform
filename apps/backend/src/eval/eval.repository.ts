@@ -1,34 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from 'prisma/prisma.service';
-import type { EvalDatasetItemInput, StartEvalRunInput } from './eval.service';
-
-export interface EvalPolicyRecord {
-  id: string;
-  projectId: string;
-  name: string;
-  passThreshold: number;
-  maxRetries: number;
-  metrics: Prisma.JsonValue;
-}
-
-interface CreateQueuedRunParams {
-  input: StartEvalRunInput;
-  cases: EvalDatasetItemInput[];
-  policy: EvalPolicyRecord | null;
-  application: {
-    id: string;
-    projectId: string;
-    name: string;
-    active: boolean;
-  } | null;
-  projectId?: string;
-  agentPrompts?: Record<string, unknown>;
-  judgeModel: string;
-  timeoutMs: number;
-  sdkMaxAttempts: number;
-  judgeMaxAttempts: number;
-}
+import type { CreateQueuedRunParams } from './eval.types';
 
 /** 평가 실행, 케이스, 결과 및 관련 작업의 영속화를 전담한다. */
 @Injectable()
