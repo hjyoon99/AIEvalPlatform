@@ -91,6 +91,7 @@ class EvaluatorAgent:
         system_prompt: Optional[str] = None,
         pass_threshold: float = 0.7,
         model: Optional[str] = None,
+        groundedness_result: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """AI 에이전트 답변을 지표별로 채점하고 가중 평균 점수를 산출한다.
 
@@ -109,6 +110,9 @@ class EvaluatorAgent:
             pass_threshold: 최종 점수가 이 값 이상이어야 통과(`passed=True`)로
                 판정된다.
             model: 채점 호출에 사용할 모델명. 생략 시 `judge_model`을 사용한다.
+            groundedness_result: `GroundednessAgent.run` 결과(RAG 유형
+                답변에만 존재). `grounded=False`이면 뒷받침되지 않는 주장
+                목록을 채점 프롬프트에 감점 참고 신호로 포함한다.
 
         Returns:
             다음 키를 포함하는 딕셔너리:
@@ -133,6 +137,19 @@ class EvaluatorAgent:
                 "\n### 감독관 재평가 지시:\n"
                 f"{supervisor_feedback}\n"
                 "이전 평가와 독립적으로 답변을 다시 검토하세요.\n"
+            )
+        if groundedness_result and not groundedness_result.get("grounded", True):
+            unsupported_claims = groundedness_result.get("unsupportedClaims", [])
+            claims_text = "; ".join(
+                f"{claim.get('claim')}({claim.get('reason')})"
+                if isinstance(claim, dict)
+                else str(claim)
+                for claim in unsupported_claims
+            )
+            user_content += (
+                "\n### 근거 충실성 검증 결과:\n"
+                f"이 답변은 근거 문서로 뒷받침되지 않는 주장을 포함합니다: {claims_text}\n"
+                "이를 사실 정확성 등 관련 지표의 감점 요소로 고려하세요.\n"
             )
 
         active_criteria = criteria or [
