@@ -25,7 +25,26 @@ flowchart LR
 
 라우팅 권한은 `supervisor` 노드 하나에 집중되어 있다. 워커(`verify`/`evaluate`/`skip_evaluation`/`groundedness_check`/`tool_call_check`)는 실행이 끝나면 항상 `supervisor`로만 복귀하며 서로를 직접 호출하지 않는다. `supervisor`는 누적된 상태(`verification`/`evaluation`/`supervision`)를 보고 매번 `Command(goto=...)`로 다음 행동을 재판단한다.
 
-검증이 유효하면 `output_metadata`(`retrievedDocuments`/`toolCalls`)만 보는 순수 코드 함수 `classify_answer_type`이 답변 유형을 판별해 RAG면 `groundedness_check`, 도구호출이면 `tool_call_check`를 먼저 거치게 한다(LLM 호출 없음). 메타데이터가 없으면 "일반" 유형으로 처리되어 기존과 동일하게 바로 `evaluate`로 간다. 두 체크 노드는 현재 결과를 state에 남기기만 하는 stub이며, 실제 검증 로직은 각각 groundedness_check(#20)/tool_call_check(#21)에서 구현된다.
+검증이 유효하면 `output_metadata`(`retrievedDocuments`/`toolCalls`)만 보는 순수 코드 함수 `classify_answer_type`이 답변 유형을 판별해 RAG면 `groundedness_check`, 도구호출이면 `tool_call_check`를 먼저 거치게 한다(LLM 호출 없음). 메타데이터가 없으면 "일반" 유형으로 처리되어 기존과 동일하게 바로 `evaluate`로 간다. `groundedness_check`는 `GroundednessAgent`로 실제 근거 충실성을 검증하며, `tool_call_check`는 아직 결과를 state에 남기기만 하는 stub이다(실제 검증 로직은 #21에서 구현).
+
+### GroundednessAgent (근거 충실성 검증)
+
+RAG 유형 답변의 각 주장이 `retrievedDocuments`(검색된 근거 문서)로 실제로 뒷받침되는지 판단한다. 검증은 한 방향으로만 이뤄진다 — 답변이 실제로 말한 내용만 보고 문서와 대조하며, 문서에는 있지만 답변이 언급하지 않은 내용(누락)은 결함으로 보지 않는다. 답변의 완전성이 아니라 "답변이 지어낸 말을 하지 않았는가"를 검증하는 것이 목적이기 때문이다.
+
+```json
+{
+  "grounded": false,
+  "unsupportedClaims": [
+    { "claim": "배송비도 저희가 전액 부담해드립니다.", "reason": "문서에 언급 없음" }
+  ],
+  "confidence": 0.9
+}
+```
+
+- `unsupportedClaims`는 문자열이 아니라 `{claim, reason}` 객체 목록이다. "문서에 언급 없음"과 "문서 내용과 모순됨"은 심각도가 다른데, 문자열만 반환하면 이 둘을 구분할 수 없어서 사유를 함께 반환하도록 정했다.
+- `retrievedDocuments` 항목은 문자열 또는 `{content, source?}` 객체 둘 다 받는다. SDK의 `ExecutionResult.metadata.retrievedDocuments`가 애초에 `unknown[]`로 느슨하게 정의되어 있어(고객사 RAG 구현마다 구조가 다름), 여기서 엄격한 스키마를 강제하지 않는다. 설계 결정과 근거는 [design-evolution.md](./design-evolution.md#10-9단계-근거-충실성-검증을-도입하며-내린-두-가지-결정) 참고.
+- `groundedness_result`가 `grounded=False`이면 `evaluate` 단계의 채점 프롬프트에 근거 없는 주장 목록이 감점 참고 신호로 포함된다(`EvaluatorAgent.run`의 `groundedness_result` 파라미터).
+- 근거 문서가 없으면 Ollama 호출 없이 즉시 검증 불가로 반환한다.
 
 구현 위치:
 
@@ -36,6 +55,7 @@ apps/agent-engine/app/
 │   ├── verifier.py
 │   ├── evaluator.py
 │   ├── supervisor.py
+│   ├── groundedness.py
 │   └── scenario_generator.py
 ├── workflows/
 │   └── evaluation_graph.py
@@ -59,7 +79,7 @@ apps/agent-engine/app/
 | `retry_count` | 현재 재평가 횟수 |
 | `max_retries` | 허용 재평가 횟수 |
 | `pass_threshold` | 실행 통과 기준 |
-| `judge_model` | 세 평가 에이전트가 실제 Ollama 호출에 사용할 모델 |
+| `judge_model` | 각 평가 에이전트(Verifier/Evaluator/Supervisor/Groundedness)가 실제 Ollama 호출에 사용할 모델 |
 | `output_metadata` | 답변 유형 분류용 `retrievedDocuments`/`toolCalls`(선택) |
 | `groundedness_result` | groundedness_check 결과. RAG 유형이 아니거나 실행 전이면 `None` |
 | `tool_call_result` | tool_call_check 결과. 도구호출 유형이 아니거나 실행 전이면 `None` |

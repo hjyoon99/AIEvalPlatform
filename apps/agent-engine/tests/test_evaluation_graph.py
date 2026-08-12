@@ -1,4 +1,4 @@
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 import pytest
 
@@ -20,10 +20,33 @@ class FakeEvaluator:
     def __init__(self, score: float = 0.9):
         self.score = score
         self.calls = 0
+        self.received_kwargs: Dict[str, Any] = {}
 
     async def run(self, **kwargs) -> Dict[str, Any]:
         self.calls += 1
+        self.received_kwargs = kwargs
         return {"score": self.score, "metrics": {"reason": "채점 완료"}}
+
+
+class FakeGroundedness:
+    def __init__(
+        self,
+        grounded: bool = True,
+        unsupported_claims: Optional[List[Dict[str, Any]]] = None,
+        confidence: float = 0.9,
+    ):
+        self.grounded = grounded
+        self.unsupported_claims = unsupported_claims or []
+        self.confidence = confidence
+        self.calls = 0
+
+    async def run(self, **kwargs) -> Dict[str, Any]:
+        self.calls += 1
+        return {
+            "grounded": self.grounded,
+            "unsupportedClaims": self.unsupported_claims,
+            "confidence": self.confidence,
+        }
 
 
 class FakeSupervisor:
@@ -70,7 +93,10 @@ async def test_invalid_verification_skips_evaluator_and_stubs_evaluation():
     evaluator = FakeEvaluator()
     supervisor = FakeSupervisor()
     workflow = EvaluationWorkflow(
-        verifier=verifier, evaluator=evaluator, supervisor=supervisor
+        verifier=verifier,
+        evaluator=evaluator,
+        supervisor=supervisor,
+        groundedness=FakeGroundedness(),
     )
 
     result = await workflow.run(prompt="질문", output="")
@@ -91,7 +117,10 @@ async def test_valid_verification_still_calls_evaluator():
     evaluator = FakeEvaluator(score=0.9)
     supervisor = FakeSupervisor()
     workflow = EvaluationWorkflow(
-        verifier=verifier, evaluator=evaluator, supervisor=supervisor
+        verifier=verifier,
+        evaluator=evaluator,
+        supervisor=supervisor,
+        groundedness=FakeGroundedness(),
     )
 
     result = await workflow.run(prompt="질문", output="괜찮은 답변", pass_threshold=0.7)
@@ -108,6 +137,7 @@ def test_workers_only_connect_through_supervisor():
         verifier=FakeVerifier(is_valid=True),
         evaluator=FakeEvaluator(),
         supervisor=FakeSupervisor(),
+        groundedness=FakeGroundedness(),
     )
 
     workers = {
@@ -129,8 +159,12 @@ async def test_rag_metadata_routes_through_groundedness_check():
     verifier = FakeVerifier(is_valid=True)
     evaluator = FakeEvaluator(score=0.9)
     supervisor = FakeSupervisor()
+    groundedness = FakeGroundedness(grounded=True)
     workflow = EvaluationWorkflow(
-        verifier=verifier, evaluator=evaluator, supervisor=supervisor
+        verifier=verifier,
+        evaluator=evaluator,
+        supervisor=supervisor,
+        groundedness=groundedness,
     )
 
     result = await workflow.run(
@@ -140,10 +174,41 @@ async def test_rag_metadata_routes_through_groundedness_check():
         output_metadata={"retrievedDocuments": ["doc-1"]},
     )
 
-    assert result["groundedness_result"]["checked"] is False
+    assert groundedness.calls == 1
+    assert result["groundedness_result"]["grounded"] is True
     assert result.get("tool_call_result") is None
     assert evaluator.calls == 1
+    assert evaluator.received_kwargs.get("groundedness_result") == result["groundedness_result"]
     assert result["supervision"]["verdict"] == "PASS"
+
+
+@pytest.mark.asyncio
+async def test_ungrounded_result_still_reaches_evaluator():
+    """groundedness_check가 grounded=False를 내도 evaluate로 계속 진행되고,
+    그 결과가 EvaluatorAgent.run()에 그대로 전달된다(감점 참고 신호로 반영하기 위함)."""
+    verifier = FakeVerifier(is_valid=True)
+    evaluator = FakeEvaluator(score=0.9)
+    supervisor = FakeSupervisor()
+    groundedness = FakeGroundedness(
+        grounded=False,
+        unsupported_claims=[{"claim": "배송비도 환불됩니다", "reason": "문서에 언급 없음"}],
+    )
+    workflow = EvaluationWorkflow(
+        verifier=verifier,
+        evaluator=evaluator,
+        supervisor=supervisor,
+        groundedness=groundedness,
+    )
+
+    result = await workflow.run(
+        prompt="질문",
+        output="근거 문서를 인용한 답변",
+        pass_threshold=0.7,
+        output_metadata={"retrievedDocuments": ["doc-1"]},
+    )
+
+    assert result["groundedness_result"]["grounded"] is False
+    assert evaluator.received_kwargs.get("groundedness_result") == result["groundedness_result"]
 
 
 @pytest.mark.asyncio
@@ -152,7 +217,10 @@ async def test_tool_call_metadata_routes_through_tool_call_check():
     evaluator = FakeEvaluator(score=0.9)
     supervisor = FakeSupervisor()
     workflow = EvaluationWorkflow(
-        verifier=verifier, evaluator=evaluator, supervisor=supervisor
+        verifier=verifier,
+        evaluator=evaluator,
+        supervisor=supervisor,
+        groundedness=FakeGroundedness(),
     )
 
     result = await workflow.run(
@@ -175,7 +243,10 @@ async def test_no_metadata_skips_both_checks():
     evaluator = FakeEvaluator(score=0.9)
     supervisor = FakeSupervisor()
     workflow = EvaluationWorkflow(
-        verifier=verifier, evaluator=evaluator, supervisor=supervisor
+        verifier=verifier,
+        evaluator=evaluator,
+        supervisor=supervisor,
+        groundedness=FakeGroundedness(),
     )
 
     result = await workflow.run(
@@ -194,7 +265,10 @@ async def test_retry_loop_still_calls_evaluator_again():
     evaluator = FakeEvaluator(score=0.9)
     supervisor = FakeSupervisor(retry_once=True)
     workflow = EvaluationWorkflow(
-        verifier=verifier, evaluator=evaluator, supervisor=supervisor
+        verifier=verifier,
+        evaluator=evaluator,
+        supervisor=supervisor,
+        groundedness=FakeGroundedness(),
     )
 
     result = await workflow.run(

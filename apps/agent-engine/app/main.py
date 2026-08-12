@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 
 from app.agents import (
     EvaluatorAgent,
+    GroundednessAgent,
     SupervisorAgent,
     ScenarioGeneratorAgent,
     TaskExecutorAgent,
@@ -24,10 +25,12 @@ executor = TaskExecutorAgent()
 verifier = VerifierAgent()
 evaluator = EvaluatorAgent()
 supervisor = SupervisorAgent()
+groundedness = GroundednessAgent()
 evaluation_workflow = EvaluationWorkflow(
     verifier=verifier,
     evaluator=evaluator,
     supervisor=supervisor,
+    groundedness=groundedness,
 )
 scenario_generator = ScenarioGeneratorAgent()
 
@@ -74,17 +77,19 @@ class EvalDatasetItem(BaseModel):
 
 
 class AgentPrompts(BaseModel):
-    """verifier/evaluator/supervisor 각 에이전트에 적용할 커스텀 시스템 프롬프트.
+    """verifier/evaluator/supervisor/groundedness 각 에이전트에 적용할 커스텀 시스템 프롬프트.
 
     Attributes:
         verifier: `VerifierAgent`에 사용할 커스텀 시스템 프롬프트(선택).
         evaluator: `EvaluatorAgent`에 사용할 커스텀 시스템 프롬프트(선택).
         supervisor: `SupervisorAgent`에 사용할 커스텀 시스템 프롬프트(선택).
+        groundedness: `GroundednessAgent`에 사용할 커스텀 시스템 프롬프트(선택).
     """
 
     verifier: Optional[str] = None
     evaluator: Optional[str] = None
     supervisor: Optional[str] = None
+    groundedness: Optional[str] = None
 
 
 class EvalRequest(BaseModel):

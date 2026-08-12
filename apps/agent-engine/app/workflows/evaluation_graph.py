@@ -4,7 +4,12 @@ from typing import Any, Dict, List, Literal, Optional, TypedDict
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
-from app.agents import EvaluatorAgent, SupervisorAgent, VerifierAgent
+from app.agents import (
+    EvaluatorAgent,
+    GroundednessAgent,
+    SupervisorAgent,
+    VerifierAgent,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,9 +74,11 @@ class EvaluationWorkflow:
     판별)이 `output_metadata`를 보고 답변 유형을 정하고, RAG 유형이면
     `groundedness_check`, 도구호출 유형이면 `tool_call_check`를 먼저
     거친 뒤 `evaluate`로 넘어간다. 메타데이터가 없으면 기존과 동일하게
-    바로 `evaluate`로 간다. `groundedness_check`/`tool_call_check`는
-    현재 결과를 state에 남기기만 하는 stub이며, 실제 검증 로직은
-    각각 #20/#21에서 구현된다.
+    바로 `evaluate`로 간다. `groundedness_check`는 `GroundednessAgent`로
+    실제 근거 충실성을 검증하며, 결과가 `grounded=False`이면 `evaluate`
+    채점 프롬프트에 감점 참고 신호로 전달된다. `tool_call_check`는 아직
+    결과를 state에 남기기만 하는 stub이며, 실제 검증 로직은 #21에서
+    구현된다.
 
     실제 판정(PASS/FAIL/RETRY)은 `SupervisorAgent`(LLM)가 내리지만, 그
     판정을 실제 노드 이동으로 바꾸는 라우팅 자체는 코드가 제한된 enum
@@ -91,21 +98,25 @@ class EvaluationWorkflow:
         verifier: VerifierAgent,
         evaluator: EvaluatorAgent,
         supervisor: SupervisorAgent,
+        groundedness: GroundednessAgent,
     ):
-        """세 에이전트를 주입받아 LangGraph 상태 그래프를 컴파일한다.
+        """네 에이전트를 주입받아 LangGraph 상태 그래프를 컴파일한다.
 
         Args:
             verifier: 1차 유효성/안전성 검증을 수행하는 `VerifierAgent`.
             evaluator: 지표 기반 채점을 수행하는 `EvaluatorAgent`.
             supervisor: 최종 PASS/FAIL/RETRY 판정을 내리는 `SupervisorAgent`.
+            groundedness: RAG 답변의 근거 충실성을 검증하는 `GroundednessAgent`.
 
         Attributes set:
-            verifier, evaluator, supervisor: 주입된 각 에이전트 인스턴스.
+            verifier, evaluator, supervisor, groundedness: 주입된 각
+                에이전트 인스턴스.
             graph: `_build_graph`로 컴파일된 실행 가능한 LangGraph 그래프.
         """
         self.verifier = verifier
         self.evaluator = evaluator
         self.supervisor = supervisor
+        self.groundedness = groundedness
         self.graph = self._build_graph()
 
     def _build_graph(self):
@@ -187,25 +198,27 @@ class EvaluationWorkflow:
         return "general"
 
     async def _groundedness_check(self, state: EvaluationState) -> Dict[str, Any]:
-        """`groundedness_check` 노드: RAG 답변의 근거 충실성 검증 stub.
+        """`groundedness_check` 노드: RAG 답변의 근거 충실성을 검증한다.
 
-        실제 검증 로직(근거 문서 대비 주장 판단)은 #20에서 구현되며,
-        지금은 LLM 호출 없이 "미구현" 결과만 state에 남겨 라우팅
-        구조를 미리 검증할 수 있게 한다.
+        `output_metadata.retrievedDocuments`를 근거로 `GroundednessAgent`를
+        실행해 답변의 각 주장이 실제로 뒷받침되는지 판단한다. 결과는
+        `evaluate` 단계의 채점 프롬프트에 감점 참고 신호로 전달된다.
 
         Args:
             state: `output_metadata`를 포함하는 현재 그래프 상태.
 
         Returns:
-            상태에 병합될 `{"groundedness_result": <stub 딕셔너리>}`.
+            상태에 병합될 `{"groundedness_result": <GroundednessAgent.run 결과>}`.
         """
-        logger.info("groundedness_check_stub not_implemented issue=#20")
-        return {
-            "groundedness_result": {
-                "checked": False,
-                "reason": "groundedness_check는 아직 구현되지 않았습니다(#20).",
-            }
-        }
+        metadata = state.get("output_metadata") or {}
+        result = await self.groundedness.run(
+            prompt=state["prompt"],
+            output=state["output"],
+            retrieved_documents=metadata.get("retrievedDocuments"),
+            system_prompt=state.get("agent_prompts", {}).get("groundedness"),
+            model=state["judge_model"],
+        )
+        return {"groundedness_result": result}
 
     async def _tool_call_check(self, state: EvaluationState) -> Dict[str, Any]:
         """`tool_call_check` 노드: 도구 호출 정확성 검증 stub.
@@ -263,6 +276,8 @@ class EvaluationWorkflow:
 
         재평가(RETRY) 루프로 재진입한 경우 `state["supervisor_feedback"]`가
         평가 프롬프트에 함께 전달되어 이전과 독립적으로 다시 채점하도록 한다.
+        `groundedness_check`를 거친 RAG 답변이면 `groundedness_result`도
+        함께 전달되어 근거 없는 주장이 감점 참고 신호로 반영된다.
 
         Args:
             state: 최소한 `prompt`, `output`, `pass_threshold`, `judge_model`을
@@ -280,6 +295,7 @@ class EvaluationWorkflow:
             system_prompt=state.get("agent_prompts", {}).get("evaluator"),
             pass_threshold=state["pass_threshold"],
             model=state["judge_model"],
+            groundedness_result=state.get("groundedness_result"),
         )
         return {"evaluation": evaluation}
 

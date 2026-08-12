@@ -8,6 +8,7 @@ from .executor import TaskExecutorAgent
 from .verifier import VerifierAgent
 from .evaluator import EvaluatorAgent
 from .supervisor import SupervisorAgent
+from .groundedness import GroundednessAgent
 from .scenario_generator import ScenarioGeneratorAgent
 
 __all__ = [
@@ -15,5 +16,6 @@ __all__ = [
     "VerifierAgent",
     "EvaluatorAgent",
     "SupervisorAgent",
+    "GroundednessAgent",
     "ScenarioGeneratorAgent",
 ]
