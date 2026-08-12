@@ -102,20 +102,90 @@ async def test_valid_verification_still_calls_evaluator():
 
 
 def test_workers_only_connect_through_supervisor():
-    """워커(verify/evaluate/skip_evaluation)가 서로 직접 연결되지 않고,
-    반드시 supervisor를 거쳐서만 오간다는 그래프 구조를 검증한다."""
+    """워커(verify/evaluate/skip_evaluation/groundedness_check/tool_call_check)가
+    서로 직접 연결되지 않고, 반드시 supervisor를 거쳐서만 오간다는 그래프 구조를 검증한다."""
     workflow = EvaluationWorkflow(
         verifier=FakeVerifier(is_valid=True),
         evaluator=FakeEvaluator(),
         supervisor=FakeSupervisor(),
     )
 
-    workers = {"verify", "evaluate", "skip_evaluation"}
+    workers = {
+        "verify",
+        "evaluate",
+        "skip_evaluation",
+        "groundedness_check",
+        "tool_call_check",
+    }
     for edge in workflow.graph.get_graph().edges:
         if edge.source in workers:
             assert edge.target == "supervisor"
         if edge.target in workers:
             assert edge.source == "supervisor"
+
+
+@pytest.mark.asyncio
+async def test_rag_metadata_routes_through_groundedness_check():
+    verifier = FakeVerifier(is_valid=True)
+    evaluator = FakeEvaluator(score=0.9)
+    supervisor = FakeSupervisor()
+    workflow = EvaluationWorkflow(
+        verifier=verifier, evaluator=evaluator, supervisor=supervisor
+    )
+
+    result = await workflow.run(
+        prompt="질문",
+        output="근거 문서를 인용한 답변",
+        pass_threshold=0.7,
+        output_metadata={"retrievedDocuments": ["doc-1"]},
+    )
+
+    assert result["groundedness_result"]["checked"] is False
+    assert result.get("tool_call_result") is None
+    assert evaluator.calls == 1
+    assert result["supervision"]["verdict"] == "PASS"
+
+
+@pytest.mark.asyncio
+async def test_tool_call_metadata_routes_through_tool_call_check():
+    verifier = FakeVerifier(is_valid=True)
+    evaluator = FakeEvaluator(score=0.9)
+    supervisor = FakeSupervisor()
+    workflow = EvaluationWorkflow(
+        verifier=verifier, evaluator=evaluator, supervisor=supervisor
+    )
+
+    result = await workflow.run(
+        prompt="질문",
+        output="도구를 호출한 답변",
+        pass_threshold=0.7,
+        output_metadata={"toolCalls": [{"name": "search"}]},
+    )
+
+    assert result["tool_call_result"]["checked"] is False
+    assert result.get("groundedness_result") is None
+    assert evaluator.calls == 1
+    assert result["supervision"]["verdict"] == "PASS"
+
+
+@pytest.mark.asyncio
+async def test_no_metadata_skips_both_checks():
+    """메타데이터가 없는 기존 요청은 "일반" 유형으로 처리되어 두 체크를 모두 건너뛴다."""
+    verifier = FakeVerifier(is_valid=True)
+    evaluator = FakeEvaluator(score=0.9)
+    supervisor = FakeSupervisor()
+    workflow = EvaluationWorkflow(
+        verifier=verifier, evaluator=evaluator, supervisor=supervisor
+    )
+
+    result = await workflow.run(
+        prompt="질문", output="평범한 답변", pass_threshold=0.7
+    )
+
+    assert result.get("groundedness_result") is None
+    assert result.get("tool_call_result") is None
+    assert evaluator.calls == 1
+    assert result["supervision"]["verdict"] == "PASS"
 
 
 @pytest.mark.asyncio
