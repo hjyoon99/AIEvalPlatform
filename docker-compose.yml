@@ -78,6 +78,7 @@ services:
       DASHBOARD_URL: http://localhost:${DASHBOARD_PORT:-5173}
       JUDGE_WORKER_ENABLED: 'true'
       JUDGE_WORKER_POLL_INTERVAL_MS: ${JUDGE_WORKER_POLL_INTERVAL_MS:-500}
+      JUDGE_WORKER_CONCURRENCY: ${JUDGE_WORKER_CONCURRENCY:-4}
     depends_on:
       postgres:
         condition: service_healthy

@@ -45,6 +45,7 @@ NestJS 기본 오류 응답은 다음 형태다.
 | POST/GET | `/eval-runs` | 평가 실행 생성/최근 목록 |
 | GET | `/eval-runs/summary` | 평가 집계 |
 | GET/DELETE | `/eval-runs/{id}` | 실행 상세/삭제 |
+| GET | `/eval-runs/{id}/events` | 실행 진행률 SSE 스트림 |
 | POST | `/sdk/v1/jobs/claim` | SDK Job claim |
 | POST | `/sdk/v1/jobs/{jobId}/start` | SDK Job 시작 |
 | POST | `/sdk/v1/jobs/{jobId}/complete` | SDK Job 완료 |
@@ -331,6 +332,7 @@ PROVIDED_OUTPUT 예:
 
 - `GET /eval-runs`: 최근 30개, cases 상태, results, 계산된 `progress`
 - `GET /eval-runs/{id}`: application, cases, SDK/Judge Job 요약, result를 포함한 상세
+- `GET /eval-runs/{id}/events`: 위와 동일한 응답 모양을 Server-Sent Events로 스트리밍. 연결 시 현재 스냅샷을 먼저 한 번 보내고, 이후 케이스가 완료·실패될 때마다 다시 보낸다. 존재하지 않는 `id`는 스트림을 열기 전에 `404`. 실행이 종결 상태(`COMPLETED`/`COMPLETED_WITH_ERRORS`/`FAILED`/`CANCELLED`)에 도달하면 마지막 이벤트를 보낸 뒤 서버가 스트림을 닫는다. 폴링 대신 사용할 수 있는 대안이며, Judge Worker가 Backend API와 같은 프로세스에서 도는 동안만 유효하다(프로세스 내 이벤트 기반이라 워커가 별도 배포되면 방식을 바꿔야 한다)
 - `GET /eval-runs/summary`: 아래 전체 집계
 - `DELETE /eval-runs/{id}`: 종결 실행 삭제; `QUEUED|RUNNING`은 `400`
 

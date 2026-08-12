@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { Prisma, type JudgeJob } from '@prisma/client';
 import { PrismaService } from 'prisma/prisma.service';
+import { EvalRunEvents } from './eval-run.events';
 
 /** Agent Engine이 반환하는 단일 케이스의 검증·채점·감독 결과다. */
 interface AgentEngineResult {
@@ -45,13 +46,27 @@ export class JudgeWorkerRepository {
   );
   private readonly enabled =
     process.env.JUDGE_WORKER_ENABLED?.toLowerCase() !== 'false';
-  private timer?: NodeJS.Timeout;
+  /**
+   * 동시에 처리할 Judge 작업 슬롯 개수. `claim()`이 이미 `status: 'PENDING'`
+   * 조건부 `updateMany`로 원자적 선점을 하기 때문에 슬롯을 늘리는 것만으로
+   * 안전하게 동시성을 얻는다. 다만 슬롯 하나당 Agent Engine 호출 1건이
+   * 동시에 나가고, 그 안에서 Ollama가 여러 번 순차 호출되므로 과도하게
+   * 늘리면 로컬 Ollama가 감당 못 할 수 있다 — 기본값을 보수적으로 둔다.
+   */
+  private readonly concurrency = this.readPositiveInteger(
+    process.env.JUDGE_WORKER_CONCURRENCY,
+    4,
+  );
+  private timers: (NodeJS.Timeout | undefined)[] = [];
   private stopping = false;
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly events: EvalRunEvents,
+  ) {}
 
   /**
-   * 모듈 시작 시 활성화된 Judge 워커의 폴링 루프를 시작한다.
+   * 모듈 시작 시 활성화된 Judge 워커의 폴링 슬롯을 동시성만큼 시작한다.
    * @returns 값을 반환하지 않는다
    */
   start() {
@@ -59,21 +74,31 @@ export class JudgeWorkerRepository {
       this.logger.log('Judge worker is disabled.');
       return;
     }
-    this.schedule(0);
-    this.logger.log('Judge worker started.');
+    this.stopping = false;
+    for (let slot = 0; slot < this.concurrency; slot++) {
+      this.schedule(slot, 0);
+    }
+    this.logger.log(
+      `Judge worker started with concurrency=${this.concurrency}.`,
+    );
   }
 
   /**
-   * 모듈 종료 시 추가 스케줄링을 막고 대기 중인 타이머를 해제한다.
+   * 모듈 종료 시 추가 스케줄링을 막고 대기 중인 모든 슬롯의 타이머를 해제한다.
    * @returns 값을 반환하지 않는다
    */
   stop() {
     this.stopping = true;
-    if (this.timer) clearTimeout(this.timer);
+    for (const timer of this.timers) {
+      if (timer) clearTimeout(timer);
+    }
+    this.timers = [];
   }
 
   /**
    * 처리 가능한 Judge 작업 하나를 선점해 실행하고 처리 여부를 반환한다.
+   * 여러 슬롯에서 동시에 호출돼도 `claim()`의 원자적 선점 덕분에 같은
+   * 작업이 중복 처리되지 않는다.
    * @returns 작업을 처리했으면 true, 대기 작업이 없으면 false
    */
   async runOnce() {
@@ -84,32 +109,35 @@ export class JudgeWorkerRepository {
   }
 
   /**
-   * 지정된 지연 뒤 다음 폴링을 실행하도록 비차단 타이머를 예약한다.
+   * 지정된 슬롯에서 지정된 지연 뒤 다음 폴링을 실행하도록 비차단 타이머를 예약한다.
+   * @param slot - 이 타이머가 속한 폴링 슬롯 번호
    * @param delayMs - 다음 폴링까지 기다릴 밀리초
    * @returns 값을 반환하지 않는다
    */
-  private schedule(delayMs: number) {
+  private schedule(slot: number, delayMs: number) {
     if (this.stopping || !this.enabled) return;
-    this.timer = setTimeout(() => {
-      void this.tick();
+    const timer = setTimeout(() => {
+      void this.tick(slot);
     }, delayMs);
-    this.timer.unref();
+    timer.unref();
+    this.timers[slot] = timer;
   }
 
   /**
-   * 한 번 폴링하고 작업 유무 또는 오류에 따라 다음 실행 시점을 결정한다.
+   * 지정된 슬롯에서 한 번 폴링하고 작업 유무 또는 오류에 따라 다음 실행 시점을 결정한다.
+   * @param slot - 폴링을 수행하는 슬롯 번호
    * @returns 폴링 및 다음 예약이 끝나면 이행되는 Promise
    */
-  private async tick() {
+  private async tick(slot: number) {
     try {
       const handled = await this.runOnce();
-      this.schedule(handled ? 0 : this.pollIntervalMs);
+      this.schedule(slot, handled ? 0 : this.pollIntervalMs);
     } catch (error) {
       this.logger.error(
         'Judge worker polling failed.',
         error instanceof Error ? error.stack : String(error),
       );
-      this.schedule(this.pollIntervalMs);
+      this.schedule(slot, this.pollIntervalMs);
     }
   }
 
@@ -119,7 +147,8 @@ export class JudgeWorkerRepository {
    */
   private async claim(): Promise<JudgeJob | null> {
     const now = new Date();
-    return this.prisma.$transaction(async (transaction) => {
+    let finalizedEvalRunId: string | null = null;
+    const claimedJob = await this.prisma.$transaction(async (transaction) => {
       const expired = await transaction.judgeJob.findMany({
         where: {
           status: { in: ['CLAIMED', 'RUNNING'] },
@@ -156,7 +185,7 @@ export class JudgeWorkerRepository {
       if (!candidate) return null;
 
       if (candidate.attempt >= candidate.maxAttempts) {
-        await this.finalizeFailure(
+        finalizedEvalRunId = await this.finalizeFailure(
           transaction,
           candidate,
           {
@@ -185,6 +214,8 @@ export class JudgeWorkerRepository {
         where: { id: candidate.id },
       });
     });
+    if (finalizedEvalRunId) this.events.emitProgress(finalizedEvalRunId);
+    return claimedJob;
   }
 
   /**
@@ -401,6 +432,7 @@ export class JudgeWorkerRepository {
       });
       await this.refreshRunSummary(transaction, runCase.evalRunId, completedAt);
     });
+    this.events.emitProgress(runCase.evalRunId);
   }
 
   /**
@@ -411,37 +443,40 @@ export class JudgeWorkerRepository {
    */
   private async fail(job: JudgeJob, error: JudgeExecutionError) {
     const failedAt = new Date();
-    await this.prisma.$transaction(async (transaction) => {
-      const current = await transaction.judgeJob.findUniqueOrThrow({
-        where: { id: job.id },
-      });
-      const shouldRetry =
-        error.retryable && current.attempt < current.maxAttempts;
-      if (shouldRetry) {
-        const backoffMs = Math.min(
-          1_000 * 2 ** Math.max(current.attempt - 1, 0),
-          30_000,
-        );
-        await transaction.judgeJob.update({
+    const finalizedEvalRunId = await this.prisma.$transaction(
+      async (transaction) => {
+        const current = await transaction.judgeJob.findUniqueOrThrow({
           where: { id: job.id },
-          data: {
-            status: 'PENDING',
-            availableAt: new Date(failedAt.getTime() + backoffMs),
-            leaseId: null,
-            leaseExpiresAt: null,
-            startedAt: null,
-            error: error as unknown as Prisma.InputJsonValue,
-          },
         });
-        await transaction.evalRunCase.update({
-          where: { id: job.evalRunCaseId },
-          data: { status: 'WAITING_FOR_JUDGE' },
-        });
-        return;
-      }
+        const shouldRetry =
+          error.retryable && current.attempt < current.maxAttempts;
+        if (shouldRetry) {
+          const backoffMs = Math.min(
+            1_000 * 2 ** Math.max(current.attempt - 1, 0),
+            30_000,
+          );
+          await transaction.judgeJob.update({
+            where: { id: job.id },
+            data: {
+              status: 'PENDING',
+              availableAt: new Date(failedAt.getTime() + backoffMs),
+              leaseId: null,
+              leaseExpiresAt: null,
+              startedAt: null,
+              error: error as unknown as Prisma.InputJsonValue,
+            },
+          });
+          await transaction.evalRunCase.update({
+            where: { id: job.evalRunCaseId },
+            data: { status: 'WAITING_FOR_JUDGE' },
+          });
+          return null;
+        }
 
-      await this.finalizeFailure(transaction, current, error, failedAt);
-    });
+        return this.finalizeFailure(transaction, current, error, failedAt);
+      },
+    );
+    if (finalizedEvalRunId) this.events.emitProgress(finalizedEvalRunId);
   }
 
   /**
@@ -477,6 +512,7 @@ export class JudgeWorkerRepository {
       },
     });
     await this.refreshRunSummary(transaction, runCase.evalRunId, failedAt);
+    return runCase.evalRunId;
   }
 
   /**
