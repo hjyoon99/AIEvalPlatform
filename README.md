@@ -278,8 +278,8 @@ Backend의 Judge Worker는 준비된 답변을 평가 큐에서 가져가 Agent 
 
 - 사용자 인증, 프로젝트별 권한과 감사 로그
 - Dashboard에서 자동 Run을 생성하는 입력 화면
-- Judge Worker의 독립 배포와 수평 확장
-- 대규모 dataset의 동시성 제어, rate limit와 실행 취소
+- Judge Worker의 독립 배포와 수평 확장(현재는 Backend API와 같은 프로세스 안에서 N-way 동시 폴링만 지원)
+- Ollama 응답 지연에 따라 동적으로 조절되는 rate limit와 실행 취소(동시성 자체는 `JUDGE_WORKER_CONCURRENCY`로 고정 조절 가능)
 - 역할별 모델·프롬프트·Ollama digest의 완전한 스냅샷
 - 다중 Judge 합의, 점수 분산과 신뢰구간 분석
 - 외부 SaaS 모델을 위한 기본 제공 Connector

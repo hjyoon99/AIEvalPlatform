@@ -137,11 +137,23 @@ SDK의 `ExecutionResult.metadata.retrievedDocuments`는 애초에 `unknown[]`로
 
 즉 groundedness와 마찬가지로, 도구 호출의 "정답"을 미리 아는 게 아니라 LLM이 prompt 문맥만으로 합리적으로 판단할 수 있는 항목만 검증 대상으로 삼았다. `toolCalls` 항목 형식도 `retrievedDocuments`와 같은 이유로 `{name, arguments}`를 가정하되 문자열이나 다른 필드명도 관대하게 받아들이도록 했다 — SDK 계약이 `unknown[]`로 느슨하게 정의되어 있는 건 마찬가지이기 때문이다.
 
-## 12. 현재 선택의 한계와 다음 변화
+## 12. 11단계: 새 큐를 들이지 않고 기존 큐의 동시성만 확장하다
 
-### 동기 실행
+Judge 처리량을 늘려야 하는 시점에 두 방향이 있었다: Redis + BullMQ 같은 별도 메시지 큐를 새로 들이는 것과, 이미 있는 `JudgeJob`(Postgres 기반 lease/claim 큐)을 그대로 두고 폴링 루프만 여러 개로 늘리는 것.
 
-Backend가 Agent Engine 완료까지 기다린다. 로컬 소규모 실행에는 단순하지만 대량 데이터셋에는 Queue, Worker, polling 또는 SSE가 필요하다.
+**[Problem]** `JudgeWorkerRepository`는 이미 `JudgeJob` 테이블로 큐잉이 되어 있었지만, 폴링 루프 자체가 단일 타이머 하나였다. `claim()` → `process()`를 완료해야 다음 `tick()`이 돌아서, `PENDING` 작업이 몇 개 쌓여 있든 항상 하나씩만 처리됐다. 시나리오 여러 개를 한 번에 넣으면 케이스 수만큼 순차적으로 대기 시간이 늘어났다.
+
+**[Why]** `claim()`은 이미 `updateMany({ where: { id, status: 'PENDING' } })`라는 조건부 원자적 갱신으로 선점하고 있었다 — 이건 여러 워커가 동시에 같은 작업을 노려도 안전하게 하나만 이기도록 설계된 패턴이다. 즉 동시성을 위한 안전장치는 이미 있었고, 실제로 동시에 도는 폴링 루프가 하나뿐이었을 뿐이다. 여기에 Redis/BullMQ를 얹으면 같은 문제(안전한 동시 선점)를 이미 풀어둔 걸 다시 푸는 셈이고, 새 인프라 의존성만 늘어난다. 반대로 이미 검증된 lease/claim 로직을 재사용하면 위험 없이 처리량을 늘릴 수 있다고 판단했다.
+
+**[How]** 폴링 루프를 슬롯 N개(`JUDGE_WORKER_CONCURRENCY`, 기본 4)로 나눠 각각 독립적으로 `claim()`/`process()`를 반복하게 했다. `claim()`/`process()` 자체는 코드 한 줄도 바꾸지 않았다 — 이미 동시 호출에 안전하게 짜여 있었기 때문이다. 다만 슬롯 하나당 Agent Engine 호출 1건이 나가고 그 안에서 Ollama가 여러 번 순차 호출되므로, 무작정 늘리면 로컬 Ollama가 못 버틴다는 트레이드오프를 문서에 남기고 기본값을 보수적으로 잡았다.
+
+진행 상태를 폴링 없이 받을 수 있도록 SSE 엔드포인트도 같이 추가했는데, 여기서도 같은 원칙을 적용했다. 지금은 워커와 API가 같은 프로세스 안에 있으므로 새 브로커 없이 `node:events`의 `EventEmitter`로 충분했다. 다만 이건 "지금 상태에 맞는 최소 해"이지 최종 해가 아니라는 것도 코드 주석에 남겼다 — Judge Worker가 나중에 별도 프로세스로 독립 배포되면(README의 기존 한계 항목) 이 프로세스 내 이벤트로는 부족해지고 Postgres LISTEN/NOTIFY나 Redis pub/sub으로 바꿔야 한다.
+
+## 13. 현재 선택의 한계와 다음 변화
+
+### 워커의 수평 확장
+
+`JudgeJob` 큐, N-way 동시 폴링(`JUDGE_WORKER_CONCURRENCY`), SSE 진행률 스트리밍까지는 갖췄지만(11단계), 워커가 여전히 Backend API 서버와 같은 프로세스 안에서만 돈다. 프로세스 하나의 동시성 한도를 넘어서려면 Judge Worker를 별도 서비스로 독립 배포하고 여러 인스턴스로 수평 확장할 수 있어야 하는데, 그러려면 지금 프로세스 내 `EventEmitter`로 구현한 SSE 브로드캐스트도 Postgres LISTEN/NOTIFY나 Redis pub/sub 같은 프로세스 간 방식으로 바꿔야 한다.
 
 ### 모델 버전 재현성
 

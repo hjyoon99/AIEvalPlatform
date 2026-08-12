@@ -4,6 +4,7 @@ import { EvalService } from './eval.service';
 import { JudgeWorkerService } from './judge-worker.service';
 import { EvalRepository } from './eval.repository';
 import { JudgeWorkerRepository } from './judge-worker.repository';
+import { EvalRunEvents } from './eval-run.events';
 
 @Module({
   controllers: [EvalController],
@@ -12,6 +13,7 @@ import { JudgeWorkerRepository } from './judge-worker.repository';
     JudgeWorkerService,
     EvalRepository,
     JudgeWorkerRepository,
+    EvalRunEvents,
   ],
 })
 export class EvalModule {}
