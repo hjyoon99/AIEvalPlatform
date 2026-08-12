@@ -25,7 +25,7 @@ flowchart LR
 
 라우팅 권한은 `supervisor` 노드 하나에 집중되어 있다. 워커(`verify`/`evaluate`/`skip_evaluation`/`groundedness_check`/`tool_call_check`)는 실행이 끝나면 항상 `supervisor`로만 복귀하며 서로를 직접 호출하지 않는다. `supervisor`는 누적된 상태(`verification`/`evaluation`/`supervision`)를 보고 매번 `Command(goto=...)`로 다음 행동을 재판단한다.
 
-검증이 유효하면 `output_metadata`(`retrievedDocuments`/`toolCalls`)만 보는 순수 코드 함수 `classify_answer_type`이 답변 유형을 판별해 RAG면 `groundedness_check`, 도구호출이면 `tool_call_check`를 먼저 거치게 한다(LLM 호출 없음). 메타데이터가 없으면 "일반" 유형으로 처리되어 기존과 동일하게 바로 `evaluate`로 간다. `groundedness_check`는 `GroundednessAgent`로 실제 근거 충실성을 검증하며, `tool_call_check`는 아직 결과를 state에 남기기만 하는 stub이다(실제 검증 로직은 #21에서 구현).
+검증이 유효하면 `output_metadata`(`retrievedDocuments`/`toolCalls`)만 보는 순수 코드 함수 `classify_answer_type`이 답변 유형을 판별해 RAG면 `groundedness_check`, 도구호출이면 `tool_call_check`를 먼저 거치게 한다(LLM 호출 없음). 메타데이터가 없으면 "일반" 유형으로 처리되어 기존과 동일하게 바로 `evaluate`로 간다. `groundedness_check`는 `GroundednessAgent`로 근거 충실성을, `tool_call_check`는 `ToolCallCheckAgent`로 도구 호출의 파라미터 타당성/필요성을 검증한다.
 
 ### GroundednessAgent (근거 충실성 검증)
 
@@ -46,6 +46,28 @@ RAG 유형 답변의 각 주장이 `retrievedDocuments`(검색된 근거 문서)
 - `groundedness_result`가 `grounded=False`이면 `evaluate` 단계의 채점 프롬프트에 근거 없는 주장 목록이 감점 참고 신호로 포함된다(`EvaluatorAgent.run`의 `groundedness_result` 파라미터).
 - 근거 문서가 없으면 Ollama 호출 없이 즉시 검증 불가로 반환한다.
 
+### ToolCallCheckAgent (도구 호출 정확성 검증)
+
+도구호출 유형 답변에서 실행된 각 `toolCalls` 호출이 사용자 질문 의도에 비춰 타당했는지 판단한다. 이용 가능한 도구의 파라미터 스키마가 계약에 없어 타입 수준의 엄격한 검증은 할 수 없으므로, 대신 두 가지만 본다: 파라미터가 질문 의도와 명백히 어긋나는가(`invalid_parameter`), 질문에 답하는 데 애초에 필요하지 않았는가(`unnecessary_call`).
+
+```json
+{
+  "valid": false,
+  "issues": [
+    {
+      "toolName": "get_weather",
+      "issue": "invalid_parameter",
+      "reason": "질문은 서울 날씨인데 도쿄로 조회함"
+    }
+  ],
+  "confidence": 0.9
+}
+```
+
+- `toolCalls` 항목은 `{name/toolName, arguments/params}` 형태를 가정하되 관대하게 파싱한다. SDK의 `ExecutionResult.metadata.toolCalls`가 `unknown[]`로 느슨하게 정의되어 있어(고객사 에이전트 프레임워크마다 구조가 다름) `retrievedDocuments`와 같은 이유로 엄격한 스키마를 강제하지 않는다. "순서"가 아니라 "파라미터 타당성"과 "필요성"만 검증 대상으로 삼은 이유는 [design-evolution.md](./design-evolution.md#11-10단계-도구-호출-검증에서-정답-스키마-없음을-받아들이다) 참고.
+- `tool_call_result`가 `valid=False`이면 `evaluate` 단계의 채점 프롬프트에 발견된 문제 목록이 감점 참고 신호로 포함된다(`EvaluatorAgent.run`의 `tool_call_result` 파라미터).
+- 도구 호출 정보가 없으면 Ollama 호출 없이 즉시 검증 불가로 반환한다.
+
 구현 위치:
 
 ```text
@@ -56,6 +78,7 @@ apps/agent-engine/app/
 │   ├── evaluator.py
 │   ├── supervisor.py
 │   ├── groundedness.py
+│   ├── tool_call.py
 │   └── scenario_generator.py
 ├── workflows/
 │   └── evaluation_graph.py
@@ -79,7 +102,7 @@ apps/agent-engine/app/
 | `retry_count` | 현재 재평가 횟수 |
 | `max_retries` | 허용 재평가 횟수 |
 | `pass_threshold` | 실행 통과 기준 |
-| `judge_model` | 각 평가 에이전트(Verifier/Evaluator/Supervisor/Groundedness)가 실제 Ollama 호출에 사용할 모델 |
+| `judge_model` | 각 평가 에이전트(Verifier/Evaluator/Supervisor/Groundedness/ToolCallCheck)가 실제 Ollama 호출에 사용할 모델 |
 | `output_metadata` | 답변 유형 분류용 `retrievedDocuments`/`toolCalls`(선택) |
 | `groundedness_result` | groundedness_check 결과. RAG 유형이 아니거나 실행 전이면 `None` |
 | `tool_call_result` | tool_call_check 결과. 도구호출 유형이 아니거나 실행 전이면 `None` |

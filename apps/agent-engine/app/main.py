@@ -9,6 +9,7 @@ from app.agents import (
     SupervisorAgent,
     ScenarioGeneratorAgent,
     TaskExecutorAgent,
+    ToolCallCheckAgent,
     VerifierAgent,
 )
 from app.workflows import EvaluationWorkflow
@@ -26,11 +27,13 @@ verifier = VerifierAgent()
 evaluator = EvaluatorAgent()
 supervisor = SupervisorAgent()
 groundedness = GroundednessAgent()
+tool_call_check = ToolCallCheckAgent()
 evaluation_workflow = EvaluationWorkflow(
     verifier=verifier,
     evaluator=evaluator,
     supervisor=supervisor,
     groundedness=groundedness,
+    tool_call=tool_call_check,
 )
 scenario_generator = ScenarioGeneratorAgent()
 
@@ -77,19 +80,21 @@ class EvalDatasetItem(BaseModel):
 
 
 class AgentPrompts(BaseModel):
-    """verifier/evaluator/supervisor/groundedness 각 에이전트에 적용할 커스텀 시스템 프롬프트.
+    """verifier/evaluator/supervisor/groundedness/toolCall 각 에이전트에 적용할 커스텀 시스템 프롬프트.
 
     Attributes:
         verifier: `VerifierAgent`에 사용할 커스텀 시스템 프롬프트(선택).
         evaluator: `EvaluatorAgent`에 사용할 커스텀 시스템 프롬프트(선택).
         supervisor: `SupervisorAgent`에 사용할 커스텀 시스템 프롬프트(선택).
         groundedness: `GroundednessAgent`에 사용할 커스텀 시스템 프롬프트(선택).
+        toolCall: `ToolCallCheckAgent`에 사용할 커스텀 시스템 프롬프트(선택).
     """
 
     verifier: Optional[str] = None
     evaluator: Optional[str] = None
     supervisor: Optional[str] = None
     groundedness: Optional[str] = None
+    toolCall: Optional[str] = None
 
 
 class EvalRequest(BaseModel):
