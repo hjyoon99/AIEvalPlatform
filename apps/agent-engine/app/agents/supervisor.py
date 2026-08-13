@@ -8,6 +8,10 @@ from pydantic import BaseModel, Field
 
 load_dotenv()
 
+# 컨센서스(다중 모델) 에스컬레이션을 트리거하는 confidence 임계값이다.
+# [설계 결정 필요] 잠정치이며, Epic E(#37 하위)에서 실측 데이터로 캘리브레이션 대상이다.
+AMBIGUITY_CONFIDENCE_THRESHOLD = 0.6
+
 
 class SupervisorDecisionSchema(BaseModel):
     """Ollama structured output으로 강제되는 감독관 최종 판정 스키마.
@@ -17,7 +21,9 @@ class SupervisorDecisionSchema(BaseModel):
         confidence: 감독관 판정의 신뢰도(0.0~1.0).
         reason: 최종 판정 근거.
         issues: 발견된 품질 문제 목록.
-        recommendedAction: 사용자에게 권장할 후속 조치.
+        recommendedAction: 사용자에게 권장할 후속 조치(자유 텍스트, 화면 표시용).
+        escalation: 판정이 애매해 다중 모델 컨센서스로 넘겨야 하는지 여부.
+            `recommendedAction`과 달리 라우팅에 쓰이는 기계 판독용 신호다.
     """
 
     verdict: Literal["PASS", "FAIL", "RETRY"] = Field(
@@ -34,6 +40,9 @@ class SupervisorDecisionSchema(BaseModel):
         description="발견된 품질 문제 목록",
     )
     recommendedAction: str = Field(description="사용자에게 권장할 후속 조치")
+    escalation: Literal["NONE", "ESCALATE_MULTI_JUDGE"] = Field(
+        description="판정이 애매해 다중 모델 컨센서스로 넘겨야 하면 ESCALATE_MULTI_JUDGE"
+    )
 
 
 class SupervisorAgent:
@@ -97,9 +106,13 @@ class SupervisorAgent:
 
         Returns:
             `verdict`("PASS"|"FAIL"|"RETRY"), `confidence`, `reason`,
-            `issues`, `recommendedAction` 키를 가진 딕셔너리. 검증 실패,
-            평가 오류(재시도 가능), LLM 호출 실패 등의 케이스는 각각의
-            고정된 사유 메시지와 함께 규칙 기반으로 즉시 반환된다.
+            `issues`, `recommendedAction`, `escalation`("NONE"|
+            "ESCALATE_MULTI_JUDGE") 키를 가진 딕셔너리. 검증 실패, 평가
+            오류(재시도 가능), LLM 호출 실패 등의 케이스는 각각의 고정된
+            사유 메시지와 함께 규칙 기반으로 즉시 반환되며(`escalation`은
+            항상 "NONE"), `confidence`가 `AMBIGUITY_CONFIDENCE_THRESHOLD`
+            미만이면 LLM 판단과 무관하게 `escalation`이
+            "ESCALATE_MULTI_JUDGE"로 강제된다.
         """
         if verification.get("error"):
             return {
@@ -108,6 +121,7 @@ class SupervisorAgent:
                 "reason": "검증 에이전트 실행에 실패하여 품질을 보장할 수 없습니다.",
                 "issues": [verification["error"]],
                 "recommendedAction": "Ollama 상태를 확인한 뒤 평가를 다시 실행하세요.",
+                "escalation": "NONE",
             }
 
         if not verification.get("isValid", False):
@@ -117,6 +131,7 @@ class SupervisorAgent:
                 "reason": verification.get("reason", "유효성 검증에 실패했습니다."),
                 "issues": ["VERIFICATION_FAILED"],
                 "recommendedAction": "원본 AI 답변을 수정하거나 다시 생성하세요.",
+                "escalation": "NONE",
             }
 
         if evaluation.get("metrics", {}).get("error") and retry_count < max_retries:
@@ -126,6 +141,7 @@ class SupervisorAgent:
                 "reason": "평가 에이전트 실행 오류로 재평가가 필요합니다.",
                 "issues": [evaluation["metrics"]["error"]],
                 "recommendedAction": "평가 에이전트를 다시 실행하세요.",
+                "escalation": "NONE",
             }
 
         active_system_prompt = (
@@ -138,7 +154,10 @@ class SupervisorAgent:
             f"2. 평가 점수가 {pass_threshold} 이상이고 중대한 문제가 없으면 PASS입니다.\n"
             f"3. 점수가 {pass_threshold} 미만이면 원칙적으로 FAIL입니다.\n"
             "4. 에이전트 결과가 명백히 충돌하고 재시도 횟수가 남은 경우에만 RETRY입니다.\n"
-            "5. 점수와 판정 근거가 일관되는지 확인하세요."
+            "5. 점수와 판정 근거가 일관되는지 확인하세요.\n"
+            "6. 검증/평가 결과만으로 판정하기 애매하거나 근거가 팽팽하게 갈리면 "
+            "confidence를 낮게 설정하고 escalation을 ESCALATE_MULTI_JUDGE로 "
+            "반환하세요. 애매하지 않으면 escalation은 NONE입니다."
         )
 
         context = {
@@ -170,6 +189,12 @@ class SupervisorAgent:
                 response.message.content or "{}"
             ).model_dump()
             score = float(evaluation.get("score", 0.0))
+
+            # LLM의 자체 판단(escalation)은 참고하되, confidence가 임계값
+            # 미만이면 코드가 결정론적으로 에스컬레이션을 강제한다 — LLM이
+            # 프롬프트 지시를 놓쳐도 낮은 confidence는 항상 트리거된다.
+            if decision["confidence"] < AMBIGUITY_CONFIDENCE_THRESHOLD:
+                decision["escalation"] = "ESCALATE_MULTI_JUDGE"
 
             if decision["verdict"] == "RETRY" and retry_count >= max_retries:
                 decision["verdict"] = (
@@ -206,4 +231,7 @@ class SupervisorAgent:
                 "reason": "감독관 호출 실패로 평가 점수 기준을 적용했습니다.",
                 "issues": [str(e)],
                 "recommendedAction": "감독관 결과를 수동으로 검토하세요.",
+                # 판정 애매함이 아니라 인프라 장애이므로 다중 모델 컨센서스로
+                # 넘기지 않는다. confidence가 낮아도 여기서는 사람 검토가 맞다.
+                "escalation": "NONE",
             }
