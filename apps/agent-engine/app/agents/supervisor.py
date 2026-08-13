@@ -12,6 +12,60 @@ load_dotenv()
 # [설계 결정 필요] 잠정치이며, Epic E(#37 하위)에서 실측 데이터로 캘리브레이션 대상이다.
 AMBIGUITY_CONFIDENCE_THRESHOLD = 0.6
 
+# score가 pass_threshold에서 이 값 이내로 붙어 있으면, LLM의 confidence와
+# 무관하게 경계선 케이스로 보고 에스컬레이션한다. 실측 47건 기준 지표별
+# 점수 편차(spread)는 낮은 평균 점수의 명백한 FAIL과 강하게 겹쳐 오탐이
+# 많아 채택하지 않았고, score margin만 코드 신호로 채택했다.
+# [설계 결정 필요] 잠정치이며, Epic E에서 캘리브레이션 대상이다.
+BORDERLINE_SCORE_MARGIN = 0.15
+
+
+def _force_escalation_if_ambiguous(
+    decision: Dict[str, Any], score: float, pass_threshold: float
+) -> None:
+    """LLM의 escalation 판단을 신뢰하지 않고, 코드가 결정론적으로 덮어쓴다.
+
+    실측 테스트(`docs/Supervisor-Escalation-Signal-Design.md` §5)에서
+    qwen3.5:4b는 명백히 애매하게 설계된 입력에서도 confidence를 0.85 밑으로
+    거의 내리지 않는다는 게 확인됐다. 즉 "confidence가 낮으면 애매한
+    것"이라는 가정은 성립해도, 역은 성립하지 않는다(애매해도 confidence가
+    안 낮을 수 있다). 그래서 LLM의 자기평가 하나만으로는 애매한 케이스를
+    놓친다 — score margin이라는, LLM 판단과 무관한 두 번째 신호로 이를
+    보완한다.
+
+    이 함수는 `decision["escalation"]`을 "ESCALATE_MULTI_JUDGE" 방향으로만
+    바꾼다. 아래 두 조건 중 하나라도 해당하면 무조건 덮어쓰고, 둘 다
+    해당하지 않으면 LLM이 반환한 값을 그대로 둔다 — 즉 LLM이 이미
+    "ESCALATE_MULTI_JUDGE"를 냈다면 이 함수가 그걸 "NONE"으로 되돌리는
+    일은 절대 없다(단방향 강제).
+
+    가설(테스트로 검증됨, `tests/test_supervisor.py` 참고):
+        1. confidence < AMBIGUITY_CONFIDENCE_THRESHOLD 이면 강제 발동한다.
+        2. score가 pass_threshold에서 BORDERLINE_SCORE_MARGIN 이내로 붙어
+           있으면, confidence가 아무리 높아도 강제 발동한다 — 실제로 DB에
+           남아있던 과거 경계 케이스(score=0.65, threshold=0.7)를 재현하면
+           qwen의 confidence는 0.95였지만 이 조건으로 잡힌다.
+        3. 위 두 조건에 모두 해당하지 않으면 LLM이 정한 값을 그대로 둔다
+           (NONE이든 ESCALATE_MULTI_JUDGE든 건드리지 않는다).
+
+    Args:
+        decision: `SupervisorDecisionSchema.model_dump()` 결과. 이 딕셔너리의
+            `"escalation"` 키를 제자리에서(in-place) 수정한다.
+        score: 이번 케이스의 평가 점수(`EvaluatorAgent.run`의 `score`).
+        pass_threshold: 사용자가 설정한 통과 기준 점수.
+
+    Returns:
+        값을 반환하지 않는다. `decision`을 직접 수정한다.
+    """
+    if decision["confidence"] < AMBIGUITY_CONFIDENCE_THRESHOLD:
+        decision["escalation"] = "ESCALATE_MULTI_JUDGE"
+    # 부동소수점 오차 보정: 예를 들어 abs(0.85 - 0.7)은 수학적으로는 0.15지만
+    # 파이썬에서는 0.15000000000000002가 되어 "<= 0.15"를 통과하지 못한다.
+    # margin이 정확히 임계값과 같은 경계값도 포함(inclusive)하는 게
+    # 의도이므로, 아주 작은 오차(1e-9)만큼 여유를 둔다.
+    if abs(score - pass_threshold) <= BORDERLINE_SCORE_MARGIN + 1e-9:
+        decision["escalation"] = "ESCALATE_MULTI_JUDGE"
+
 
 class SupervisorDecisionSchema(BaseModel):
     """Ollama structured output으로 강제되는 감독관 최종 판정 스키마.
@@ -127,8 +181,10 @@ class SupervisorAgent:
             "ESCALATE_MULTI_JUDGE") 키를 가진 딕셔너리. 검증 실패, 평가
             오류(재시도 가능), LLM 호출 실패 등의 케이스는 각각의 고정된
             사유 메시지와 함께 규칙 기반으로 즉시 반환되며(`escalation`은
-            항상 "NONE"), `confidence`가 `AMBIGUITY_CONFIDENCE_THRESHOLD`
-            미만이면 LLM 판단과 무관하게 `escalation`이
+            항상 "NONE"). 그 외에는 `confidence`가
+            `AMBIGUITY_CONFIDENCE_THRESHOLD` 미만이거나 평가 점수가
+            `pass_threshold`에서 `BORDERLINE_SCORE_MARGIN` 이내로 붙어
+            있으면, LLM 판단과 무관하게 `escalation`이
             "ESCALATE_MULTI_JUDGE"로 강제된다.
         """
         if verification.get("error"):
@@ -215,11 +271,9 @@ class SupervisorAgent:
             ).model_dump()
             score = float(evaluation.get("score", 0.0))
 
-            # LLM의 자체 판단(escalation)은 참고하되, confidence가 임계값
-            # 미만이면 코드가 결정론적으로 에스컬레이션을 강제한다 — LLM이
-            # 프롬프트 지시를 놓쳐도 낮은 confidence는 항상 트리거된다.
-            if decision["confidence"] < AMBIGUITY_CONFIDENCE_THRESHOLD:
-                decision["escalation"] = "ESCALATE_MULTI_JUDGE"
+            # LLM의 자체 판단(escalation)은 참고하되, 코드 신호가 걸리면
+            # 결정론적으로 덮어쓴다 — 자세한 근거와 가설은 함수 docstring 참고.
+            _force_escalation_if_ambiguous(decision, score, pass_threshold)
 
             if decision["verdict"] == "RETRY" and retry_count >= max_retries:
                 decision["verdict"] = (
