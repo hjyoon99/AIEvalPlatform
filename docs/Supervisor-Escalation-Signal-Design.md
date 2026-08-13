@@ -223,9 +223,50 @@ return Command(goto=END, update={"supervision": supervision})
 
 `tests/test_evaluation_graph.py::test_escalation_during_retry_survives_to_final_verdict` — 1차 판정(RETRY)에서 `escalation="ESCALATE_MULTI_JUDGE"`가 뜨고, 2차(최종) 판정은 `escalation="NONE"`으로 PASS가 나오는 상황을 재현. 최종 `result["supervision"]["escalation"]`이 `"ESCALATE_MULTI_JUDGE"`로 유지되는지 확인한다. 대조군으로 `test_retry_loop_still_calls_evaluator_again`에 `escalation == "NONE"` 단언을 추가해, 애매하지 않았던 RETRY까지 오탐으로 켜지지 않는지도 같이 확인한다.
 
-## 13. 관련 커밋
+## 13. `#40` 후속 — 재시도 소진 시 escalation을 조건 없이 강제
+
+### 13.1 논의된 새 엣지 케이스
+
+`#40`을 구현하며 짚었던 것과 별개로, `supervisor.py`에는 재시도 횟수가 소진됐는데도 LLM이 여전히 `verdict="RETRY"`를 원하는 경우, 그 판단을 무시하고 `score >= pass_threshold`만으로 PASS/FAIL을 기계적으로 강제하는 지점이 있다. 이 강제 변환이 원래 escalation을 켜야 하는지에 대한 결정이 없었다.
+
+### 13.2 결정과 근거 — **confidence/margin이 약한 지표라서, 재시도 소진이라는 더 직접적인 지표를 대신 썼다**
+
+`confidence`와 `BORDERLINE_SCORE_MARGIN` 둘 다, 이미 §5·§8에서 강력한 지표가 아니라는 게 확인됐다.
+
+- `confidence`는 qwen3.5:4b가 어떤 입력에도 0.85 밑으로 거의 안 내려가는 등, 애초에 잘 안 움직이는 약한 지표다(§5).
+- `BORDERLINE_SCORE_MARGIN`도 47건이라는 작은 표본으로 근사한 값일 뿐, 정밀한 기준은 아니다(§8).
+
+두 지표가 이미 신뢰도가 낮다고 확인된 상태에서, "재시도 소진 시에도 이 두 지표가 걸릴 때만 escalation을 켠다"는 조건부 규칙을 추가하면, **약한 지표에 또 하나의 약한 판단을 얹는 셈**이 된다. 반면 "LLM이 재시도 예산을 다 쓰고도 스스로 PASS/FAIL을 못 냈다"는 사실은 confidence나 margin처럼 간접적으로 추정한 값이 아니라 **직접 관찰**이다 — 더 신뢰할 수 있는 신호가 있는데 그걸 신뢰도 낮은 신호의 조건 뒤에 숨길 이유가 없다.
+
+**그래서 재시도 소진 케이스는 confidence/margin과 무관하게 무조건 escalation을 켜기로 결정했다.**
+
+### 13.3 구현
+
+`_apply_retry_exhaustion(decision, score, pass_threshold, retry_count, max_retries)`를 `_force_escalation_if_ambiguous`와 별도의 순수 함수로 분리했다(`app/agents/supervisor.py`).
+
+```python
+def _apply_retry_exhaustion(decision, score, pass_threshold, retry_count, max_retries):
+    if decision["verdict"] == "RETRY" and retry_count >= max_retries:
+        decision["verdict"] = "PASS" if score >= pass_threshold else "FAIL"
+        decision["reason"] = f"최대 재평가 횟수에 도달했습니다. {decision['reason']}"
+        decision["escalation"] = "ESCALATE_MULTI_JUDGE"  # 조건 없이 강제
+```
+
+이 강제 변환은 `supervisor.py` 안에서 일어나므로, 그래프로 돌아왔을 때 `verdict`는 이미 PASS/FAIL이라 `#40`에서 만든 `escalated_during_retries` 누적 메커니즘(§12)을 그대로 타고 최종 결과까지 자연스럽게 반영된다 — 별도 그래프 코드 변경이 필요 없었다.
+
+### 13.4 테스트
+
+`tests/test_supervisor.py`에 순수 로직 테스트 4개 추가(Ollama 불필요):
+
+- `test_retry_exhaustion_forces_escalation_even_with_high_confidence_and_no_margin` — confidence 0.95, margin 0.22(경계 아님)이어도 재시도 소진이면 강제되는지
+- `test_retry_exhaustion_converts_verdict_using_score_threshold` — 강제된 verdict가 LLM 의견이 아니라 순수 score 비교로 정해지는지
+- `test_retry_exhaustion_does_nothing_when_retries_remain` — 재시도 여력이 남아있으면 아무것도 안 건드리는지(그래프가 실제 재평가를 하게 둬야 함)
+- `test_retry_exhaustion_does_nothing_for_non_retry_verdicts` — verdict가 애초에 RETRY가 아니면 무관하게 아무것도 안 건드리는지
+
+## 14. 관련 커밋
 
 - `cbbad96` feat: add multi-judge escalation signal to Supervisor #38
 - `ffd863c` fix: separate Supervisor's escalation enum from recommendedAction free text #38
 - (미커밋) margin 기반 코드 신호 추가 + 부동소수점 보정 + 회귀 테스트/재현 스크립트
 - (미커밋) `#40`: RETRY 루프 중 뜬 escalation 신호를 최종 판정까지 유지
+- (미커밋) `#40` 후속: 재시도 소진 시 escalation을 confidence/margin과 무관하게 조건 없이 강제

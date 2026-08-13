@@ -29,6 +29,7 @@ from ollama import AsyncClient
 from app.agents.supervisor import (
     AMBIGUITY_CONFIDENCE_THRESHOLD,
     SupervisorAgent,
+    _apply_retry_exhaustion,
     _force_escalation_if_ambiguous,
 )
 
@@ -114,6 +115,70 @@ def test_escalation_forcing_never_downgrades_llm_own_signal():
     _force_escalation_if_ambiguous(decision, score=0.92, pass_threshold=0.7)
 
     assert decision["escalation"] == "ESCALATE_MULTI_JUDGE"
+
+
+# ---------------------------------------------------------------------------
+# 1a-2. _apply_retry_exhaustion — 순수 함수, Ollama 불필요 (#40 후속)
+# ---------------------------------------------------------------------------
+
+
+def test_retry_exhaustion_forces_escalation_even_with_high_confidence_and_no_margin():
+    """가설(#40 후속): 재시도 횟수가 소진됐는데 LLM이 여전히 RETRY를
+    원하면, confidence가 높고(0.95) score margin이 전혀 경계선이
+    아니어도(0.92/0.7, margin 0.22) escalation이 강제로 켜져야 한다 —
+    confidence/margin은 이미 신뢰도가 낮다고 확인된 간접 신호라, 재시도
+    소진처럼 더 직접적인 신호가 있을 땐 그 두 조건과 무관하게 켠다."""
+    decision = _base_decision(
+        verdict="RETRY", confidence=0.95, escalation="NONE", reason="여전히 애매함"
+    )
+
+    _apply_retry_exhaustion(
+        decision, score=0.92, pass_threshold=0.7, retry_count=1, max_retries=1
+    )
+
+    assert decision["verdict"] == "PASS"  # score(0.92) >= pass_threshold(0.7)
+    assert decision["escalation"] == "ESCALATE_MULTI_JUDGE"
+    assert "최대 재평가 횟수" in decision["reason"]
+
+
+def test_retry_exhaustion_converts_verdict_using_score_threshold():
+    """가설: 강제 전환된 verdict는 LLM 의견이 아니라 순수 score 비교로
+    정해진다 — score(0.5)가 threshold(0.7) 미만이면 FAIL이어야 한다."""
+    decision = _base_decision(verdict="RETRY", confidence=0.95, escalation="NONE")
+
+    _apply_retry_exhaustion(
+        decision, score=0.5, pass_threshold=0.7, retry_count=2, max_retries=2
+    )
+
+    assert decision["verdict"] == "FAIL"
+    assert decision["escalation"] == "ESCALATE_MULTI_JUDGE"
+
+
+def test_retry_exhaustion_does_nothing_when_retries_remain():
+    """가설: 아직 재시도 여력이 남아있으면(retry_count < max_retries) 이
+    함수는 아무것도 건드리지 않는다 — verdict도 escalation도 그대로다.
+    (그래프가 RETRY로 라우팅해 실제 재평가를 하게 둬야 하므로.)"""
+    decision = _base_decision(verdict="RETRY", confidence=0.95, escalation="NONE")
+
+    _apply_retry_exhaustion(
+        decision, score=0.92, pass_threshold=0.7, retry_count=0, max_retries=1
+    )
+
+    assert decision["verdict"] == "RETRY"
+    assert decision["escalation"] == "NONE"
+
+
+def test_retry_exhaustion_does_nothing_for_non_retry_verdicts():
+    """가설: verdict가 애초에 RETRY가 아니면(이미 PASS/FAIL로 확정)
+    재시도 소진 여부와 무관하게 이 함수는 아무것도 건드리지 않는다."""
+    decision = _base_decision(verdict="PASS", confidence=0.95, escalation="NONE")
+
+    _apply_retry_exhaustion(
+        decision, score=0.92, pass_threshold=0.7, retry_count=5, max_retries=1
+    )
+
+    assert decision["verdict"] == "PASS"
+    assert decision["escalation"] == "NONE"
 
 
 # ---------------------------------------------------------------------------

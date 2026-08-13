@@ -67,6 +67,47 @@ def _force_escalation_if_ambiguous(
         decision["escalation"] = "ESCALATE_MULTI_JUDGE"
 
 
+def _apply_retry_exhaustion(
+    decision: Dict[str, Any],
+    score: float,
+    pass_threshold: float,
+    retry_count: int,
+    max_retries: int,
+) -> None:
+    """재시도 횟수가 소진됐는데도 LLM이 여전히 RETRY를 원하면, 그 판단을
+    무시하고 score만으로 PASS/FAIL을 기계적으로 강제한다(#40 후속).
+
+    이때 escalation은 confidence나 score margin과 무관하게 무조건
+    "ESCALATE_MULTI_JUDGE"로 강제한다. `AMBIGUITY_CONFIDENCE_THRESHOLD`와
+    `BORDERLINE_SCORE_MARGIN`은 둘 다 간접 추정치라 이미 신뢰도가 낮다는
+    게 실측으로 확인됐다(`docs/Supervisor-Escalation-Signal-Design.md`
+    §5·§12) — qwen3.5:4b는 confidence를 거의 안 낮추고, margin도 작은
+    샘플로 근사한 값일 뿐이다. 반면 "LLM이 재시도 예산을 다 쓰고도 스스로
+    PASS/FAIL을 못 냈다"는 건 간접 추정이 아니라 직접 관찰이라, 이 두
+    간접 신호의 성립 여부를 조건으로 걸 이유가 없다. 더 신뢰도 낮은
+    조건에 기대느니, 더 직접적인 신호가 있을 땐 무조건 켠다.
+
+    Args:
+        decision: `SupervisorDecisionSchema.model_dump()` 결과(또는 이미
+            `_force_escalation_if_ambiguous`를 거친 딕셔너리). 이
+            딕셔너리의 `"verdict"`, `"reason"`, `"escalation"` 키를
+            제자리에서(in-place) 수정한다. `decision["verdict"]`가
+            "RETRY"가 아니거나 재시도 여력이 남아있으면 아무것도
+            건드리지 않는다.
+        score: 이번 케이스의 평가 점수.
+        pass_threshold: 사용자가 설정한 통과 기준 점수.
+        retry_count: 지금까지 수행한 재평가 횟수.
+        max_retries: 허용되는 최대 재평가 횟수.
+
+    Returns:
+        값을 반환하지 않는다. `decision`을 직접 수정한다.
+    """
+    if decision["verdict"] == "RETRY" and retry_count >= max_retries:
+        decision["verdict"] = "PASS" if score >= pass_threshold else "FAIL"
+        decision["reason"] = f"최대 재평가 횟수에 도달했습니다. {decision['reason']}"
+        decision["escalation"] = "ESCALATE_MULTI_JUDGE"
+
+
 class SupervisorDecisionSchema(BaseModel):
     """Ollama structured output으로 강제되는 감독관 최종 판정 스키마.
 
@@ -181,11 +222,16 @@ class SupervisorAgent:
             "ESCALATE_MULTI_JUDGE") 키를 가진 딕셔너리. 검증 실패, 평가
             오류(재시도 가능), LLM 호출 실패 등의 케이스는 각각의 고정된
             사유 메시지와 함께 규칙 기반으로 즉시 반환되며(`escalation`은
-            항상 "NONE"). 그 외에는 `confidence`가
-            `AMBIGUITY_CONFIDENCE_THRESHOLD` 미만이거나 평가 점수가
-            `pass_threshold`에서 `BORDERLINE_SCORE_MARGIN` 이내로 붙어
-            있으면, LLM 판단과 무관하게 `escalation`이
-            "ESCALATE_MULTI_JUDGE"로 강제된다.
+            항상 "NONE"). 그 외에는 다음 세 조건 중 하나라도 해당하면
+            LLM 판단과 무관하게 `escalation`이 "ESCALATE_MULTI_JUDGE"로
+            강제된다: (1) `confidence`가 `AMBIGUITY_CONFIDENCE_THRESHOLD`
+            미만, (2) 평가 점수가 `pass_threshold`에서
+            `BORDERLINE_SCORE_MARGIN` 이내로 붙어 있음, (3) 재시도
+            횟수가 소진되어 LLM의 RETRY 판정을 무시하고 점수만으로
+            PASS/FAIL을 기계적으로 강제한 경우 — confidence/margin은
+            간접 추정치라 이미 신뢰도가 낮다는 게 확인됐으므로, 재시도
+            소진처럼 더 직접적인 신호가 있는 경우엔 그 두 조건과
+            무관하게 무조건 켠다.
         """
         if verification.get("error"):
             return {
@@ -272,18 +318,11 @@ class SupervisorAgent:
             score = float(evaluation.get("score", 0.0))
 
             # LLM의 자체 판단(escalation)은 참고하되, 코드 신호가 걸리면
-            # 결정론적으로 덮어쓴다 — 자세한 근거와 가설은 함수 docstring 참고.
+            # 결정론적으로 덮어쓴다 — 자세한 근거와 가설은 각 함수 docstring 참고.
             _force_escalation_if_ambiguous(decision, score, pass_threshold)
-
-            if decision["verdict"] == "RETRY" and retry_count >= max_retries:
-                decision["verdict"] = (
-                    "PASS"
-                    if score >= pass_threshold
-                    else "FAIL"
-                )
-                decision["reason"] = (
-                    f"최대 재평가 횟수에 도달했습니다. {decision['reason']}"
-                )
+            _apply_retry_exhaustion(
+                decision, score, pass_threshold, retry_count, max_retries
+            )
 
             # LLM 감독관의 설명 능력은 활용하되 사용자가 정한 정량 정책은
             # 절대 우회하지 못하게 한다.
