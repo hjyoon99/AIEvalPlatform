@@ -31,6 +31,19 @@ interface JudgeExecutionError {
   retryable: boolean;
 }
 
+/** throw 가능하도록 Error를 상속한 JudgeExecutionError 구현체다. */
+class JudgeError extends Error {
+  readonly code: string;
+  readonly retryable: boolean;
+
+  constructor(details: JudgeExecutionError) {
+    super(details.message);
+    this.name = 'JudgeError';
+    this.code = details.code;
+    this.retryable = details.retryable;
+  }
+}
+
 @Injectable()
 export class JudgeWorkerRepository {
   private readonly logger = new Logger(JudgeWorkerRepository.name);
@@ -264,11 +277,11 @@ export class JudgeWorkerRepository {
     runCase: Prisma.EvalRunCaseGetPayload<{ include: { evalRun: true } }>,
   ) {
     if (!runCase.outputAnswer?.trim()) {
-      throw {
+      throw new JudgeError({
         code: 'MISSING_OUTPUT',
         message: 'EvalRunCase has no outputAnswer',
         retryable: false,
-      } satisfies JudgeExecutionError;
+      });
     }
 
     const input = this.asRecord(runCase.input);
@@ -280,11 +293,11 @@ export class JudgeWorkerRepository {
     );
     const prompt = typeof input.prompt === 'string' ? input.prompt : '';
     if (!prompt.trim()) {
-      throw {
+      throw new JudgeError({
         code: 'INVALID_CASE_INPUT',
         message: 'EvalRunCase input has no prompt',
         retryable: false,
-      } satisfies JudgeExecutionError;
+      });
     }
 
     const response = await fetch(
@@ -319,11 +332,11 @@ export class JudgeWorkerRepository {
     );
 
     if (!response.ok) {
-      throw {
+      throw new JudgeError({
         code: 'AGENT_ENGINE_ERROR',
         message: `Agent Engine returned HTTP ${response.status}`,
         retryable: response.status === 429 || response.status >= 500,
-      } satisfies JudgeExecutionError;
+      });
     }
 
     const payload = (await response.json()) as AgentEngineResponse;
@@ -335,11 +348,11 @@ export class JudgeWorkerRepository {
       result.score > 1 ||
       !['PASS', 'FAIL', 'RETRY'].includes(result.verdict)
     ) {
-      throw {
+      throw new JudgeError({
         code: 'INVALID_JUDGE_RESPONSE',
         message: 'Agent Engine returned an invalid evaluation result',
         retryable: true,
-      } satisfies JudgeExecutionError;
+      });
     }
     return result;
   }
@@ -568,7 +581,13 @@ export class JudgeWorkerRepository {
    * @returns 코드, 메시지 및 재시도 여부를 가진 표준 오류
    */
   private normalizeError(error: unknown): JudgeExecutionError {
-    if (this.isJudgeError(error)) return error;
+    if (error instanceof JudgeError) {
+      return {
+        code: error.code,
+        message: error.message,
+        retryable: error.retryable,
+      };
+    }
     if (error instanceof Error) {
       return {
         code: 'JUDGE_EXECUTION_ERROR',
@@ -584,28 +603,13 @@ export class JudgeWorkerRepository {
   }
 
   /**
-   * 값이 JudgeExecutionError 구조를 만족하는지 판별한다.
-   * @param value - 검사할 임의의 값
-   * @returns 표준 Judge 오류 구조이면 true
-   */
-  private isJudgeError(value: unknown): value is JudgeExecutionError {
-    if (!value || typeof value !== 'object') return false;
-    const candidate = value as Partial<JudgeExecutionError>;
-    return (
-      typeof candidate.code === 'string' &&
-      typeof candidate.message === 'string' &&
-      typeof candidate.retryable === 'boolean'
-    );
-  }
-
-  /**
    * Prisma JSON 값이 일반 객체일 때만 레코드로 반환한다.
    * @param value - 변환할 Prisma JSON 값
    * @returns 일반 객체이면 해당 레코드, 아니면 빈 객체
    */
   private asRecord(value: Prisma.JsonValue | null): Record<string, unknown> {
     return value && typeof value === 'object' && !Array.isArray(value)
-      ? (value as Record<string, unknown>)
+      ? value
       : {};
   }
 
