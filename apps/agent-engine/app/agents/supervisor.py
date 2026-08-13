@@ -16,14 +16,20 @@ AMBIGUITY_CONFIDENCE_THRESHOLD = 0.6
 class SupervisorDecisionSchema(BaseModel):
     """Ollama structured output으로 강제되는 감독관 최종 판정 스키마.
 
+    `escalation`과 `recommendedAction`은 역할이 다르다: `escalation`은 코드가
+    라우팅에 쓰는 고정된 enum 신호이고, `recommendedAction`은 사람이 읽는
+    자유 문장이다. 두 필드가 나란히 있으면 모델이 서로의 값 형식(짧은
+    키워드 vs 문장)을 혼동하는 경향이 관찰되어, 스키마 순서상 서로 멀리
+    떨어뜨리고 필드 설명에 상호 참조와 예시를 명시해 구분한다.
+
     Attributes:
         verdict: 최종 통과("PASS"), 실패("FAIL") 또는 재평가("RETRY") 판정.
         confidence: 감독관 판정의 신뢰도(0.0~1.0).
+        escalation: 판정이 애매해 다중 모델 컨센서스로 넘겨야 하는지 여부.
+            고정된 enum 값만 허용되는 기계 판독용 신호다.
         reason: 최종 판정 근거.
         issues: 발견된 품질 문제 목록.
-        recommendedAction: 사용자에게 권장할 후속 조치(자유 텍스트, 화면 표시용).
-        escalation: 판정이 애매해 다중 모델 컨센서스로 넘겨야 하는지 여부.
-            `recommendedAction`과 달리 라우팅에 쓰이는 기계 판독용 신호다.
+        recommendedAction: 사용자에게 권장할 후속 조치(자유 문장, 화면 표시용).
     """
 
     verdict: Literal["PASS", "FAIL", "RETRY"] = Field(
@@ -34,14 +40,25 @@ class SupervisorDecisionSchema(BaseModel):
         le=1.0,
         description="감독관 판정의 신뢰도",
     )
+    escalation: Literal["NONE", "ESCALATE_MULTI_JUDGE"] = Field(
+        description=(
+            "판정이 애매해 다중 모델 컨센서스로 넘겨야 하면 "
+            "ESCALATE_MULTI_JUDGE, 아니면 NONE. 이 두 값만 허용되며 "
+            "recommendedAction과는 별개의 필드다."
+        )
+    )
     reason: str = Field(description="최종 판정 근거")
     issues: List[str] = Field(
         default_factory=list,
         description="발견된 품질 문제 목록",
     )
-    recommendedAction: str = Field(description="사용자에게 권장할 후속 조치")
-    escalation: Literal["NONE", "ESCALATE_MULTI_JUDGE"] = Field(
-        description="판정이 애매해 다중 모델 컨센서스로 넘겨야 하면 ESCALATE_MULTI_JUDGE"
+    recommendedAction: str = Field(
+        description=(
+            "사용자에게 권장할 후속 조치를 완전한 한국어 문장으로 작성한다. "
+            "예: '기준 미달 지표를 개선한 뒤 다시 평가하세요.' "
+            "'PASS'/'FAIL'/'RETRY'/'NONE' 같은 단일 키워드는 절대 쓰지 않는다 "
+            "— 그건 verdict와 escalation 필드의 값이지 이 필드의 값이 아니다."
+        )
     )
 
 
@@ -157,7 +174,15 @@ class SupervisorAgent:
             "5. 점수와 판정 근거가 일관되는지 확인하세요.\n"
             "6. 검증/평가 결과만으로 판정하기 애매하거나 근거가 팽팽하게 갈리면 "
             "confidence를 낮게 설정하고 escalation을 ESCALATE_MULTI_JUDGE로 "
-            "반환하세요. 애매하지 않으면 escalation은 NONE입니다."
+            "반환하세요. 애매하지 않으면 escalation은 NONE입니다.\n"
+            "7. escalation과 recommendedAction은 서로 다른 필드입니다. "
+            "escalation에는 반드시 NONE 또는 ESCALATE_MULTI_JUDGE만 쓰고, "
+            "recommendedAction에는 PASS/FAIL/RETRY/NONE 같은 단일 단어를 "
+            "절대 쓰지 말고 사람이 읽을 완전한 문장을 쓰세요.\n"
+            "예시: {\"verdict\": \"FAIL\", \"confidence\": 0.9, "
+            "\"escalation\": \"NONE\", \"reason\": \"...\", \"issues\": [], "
+            "\"recommendedAction\": \"기준 미달 지표를 개선한 뒤 다시 "
+            "평가하세요.\"}"
         )
 
         context = {
