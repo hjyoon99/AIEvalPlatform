@@ -42,6 +42,15 @@ class EvaluationState(TypedDict, total=False):
             아직 실행 전이면 `None`.
         tool_call_result: `tool_call_check` 결과. 도구호출 유형이 아니거나
             아직 실행 전이면 `None`.
+        escalated_during_retries: RETRY 루프를 도는 동안 한 번이라도
+            `supervision.escalation`이 "ESCALATE_MULTI_JUDGE"였는지
+            누적한 플래그(#40). RETRY 라운드마다 `supervision`이
+            `None`으로 리셋되면서 그 라운드의 escalation 신호도 같이
+            사라지는 걸 막기 위한 것 — 최종 판정(PASS/FAIL) 시점에 이
+            플래그가 True면, 마지막 라운드 자체는 confidence가 높고
+            score도 경계선이 아니었더라도 최종 `escalation`을
+            "ESCALATE_MULTI_JUDGE"로 강제한다. 한 번이라도 애매했던
+            케이스는 끝까지 애매했던 케이스로 취급한다는 뜻이다.
     """
 
     prompt: str
@@ -60,6 +69,7 @@ class EvaluationState(TypedDict, total=False):
     output_metadata: Dict[str, Any]
     groundedness_result: Optional[Dict[str, Any]]
     tool_call_result: Optional[Dict[str, Any]]
+    escalated_during_retries: bool
 
 
 class EvaluationWorkflow:
@@ -318,7 +328,11 @@ class EvaluationWorkflow:
 
         RETRY 판정 시에는 `retry_count`를 증가시키고 `evaluation`과
         `supervision`을 `None`으로 되돌려, 다음 `evaluate` 실행 후 이
-        노드가 재판정을 수행하도록 신호를 남긴다.
+        노드가 재판정을 수행하도록 신호를 남긴다. 이때 이번 라운드의
+        `supervision.escalation`이 "ESCALATE_MULTI_JUDGE"였다면
+        `escalated_during_retries`에 누적해두고(#40), 최종 판정이 날 때
+        이 누적값을 다시 반영해 중간 라운드의 애매함 신호가 리셋 때문에
+        유실되지 않게 한다.
 
         Args:
             state: `verification`/`evaluation`/`supervision`의 진행 상태와
@@ -360,6 +374,10 @@ class EvaluationWorkflow:
                 model=state["judge_model"],
             )
 
+            escalated_so_far = state.get("escalated_during_retries", False) or (
+                supervision.get("escalation") == "ESCALATE_MULTI_JUDGE"
+            )
+
             if supervision["verdict"] == "RETRY" and retry_count <= max_retries:
                 return Command(
                     goto="evaluate",
@@ -368,8 +386,15 @@ class EvaluationWorkflow:
                         "supervisor_feedback": supervision["reason"],
                         "evaluation": None,
                         "supervision": None,
+                        "escalated_during_retries": escalated_so_far,
                     },
                 )
+
+            # 최종 판정(PASS/FAIL) 시점: 지금 이 라운드는 안 애매했더라도
+            # 이전 RETRY 라운드 중 한 번이라도 애매했다면(#40), 그 신호를
+            # 리셋으로 잃지 않고 최종 escalation에 그대로 되살린다.
+            if escalated_so_far:
+                supervision = {**supervision, "escalation": "ESCALATE_MULTI_JUDGE"}
             return Command(goto=END, update={"supervision": supervision})
 
         # 방어적 처리: verification/evaluation/supervision이 모두 채워진

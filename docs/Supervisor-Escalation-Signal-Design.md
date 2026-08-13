@@ -1,6 +1,6 @@
-# Supervisor 에스컬레이션 신호 설계 (Epic #37 / #38)
+# Supervisor 에스컬레이션 신호 설계 (Epic #37 / #38 / #40)
 
-`#37`(다중 모델 컨센서스 에스컬레이션) 에픽의 `#38`(Supervisor 에스컬레이션 신호 추가)을 구현하며 나눈 논의, 설계 고민, 발견한 문제와 수정, 그리고 실측 테스트 결과를 정리한다.
+`#37`(다중 모델 컨센서스 에스컬레이션) 에픽의 `#38`(Supervisor 에스컬레이션 신호 추가), `#40`(RETRY 루프와 컨센서스 에스컬레이션의 관계 정의)을 구현하며 나눈 논의, 설계 고민, 발견한 문제와 수정, 그리고 실측 테스트 결과를 정리한다.
 
 ## 1. 배경
 
@@ -185,8 +185,47 @@ python scripts/compare_supervisor_ambiguity_signals.py
 python scripts/compare_supervisor_ambiguity_signals.py --models qwen3.5:4b gemma2:2b
 ```
 
-## 12. 관련 커밋
+## 12. `#40` — RETRY 루프와 컨센서스 에스컬레이션의 관계
+
+### 12.1 문제
+
+`SupervisorAgent.run()`이 반환하는 `escalation`은 `verdict`와 완전히 독립적인 필드다 — `verdict`는 "이 답변이 PASS/FAIL/RETRY냐"는 판정 자체이고, `escalation`은 "그 판정을 Supervisor가 얼마나 확신하느냐"는 메타 신호다. 그런데 `_force_escalation_if_ambiguous`(§8)는 `verdict`를 전혀 보지 않기 때문에, 이론적으로 `verdict="RETRY"`이면서 동시에 `escalation="ESCALATE_MULTI_JUDGE"`인 응답이 나올 수 있다.
+
+문제는 `evaluation_graph.py`의 `_supervisor_node`가 RETRY 판정을 받으면 `supervision` 전체를 `None`으로 리셋하고 `evaluate`로 되돌아간다는 것이다. 이때 그 라운드의 `escalation` 값도 같이 사라진다. `#41`(consensus_evaluator, 아직 미구현)이 없는 지금은 아무도 `escalation`을 읽지 않아 우연히 무해하지만, 애매했던 신호가 재시도 도중 조용히 유실될 수 있다는 건 사실이다.
+
+### 12.2 논의와 결정
+
+"RETRY 우선 vs ESCALATE 우선, 둘 중 뭐가 이겨야 하는가"로 문제를 처음 프레이밍했으나, 실제로는 **RETRY도 ESCALATE_MULTI_JUDGE도 지금 당장 다른 모델을 부르는 코드는 없다** — `#41`이 만들어지기 전까지는 어느 쪽이 "이겨도" 오늘 실행되는 동작은 같다(RETRY만 실제로 뭔가를 재실행한다). 그래서 진짜 질문은 "지금 뭘 실행하느냐"가 아니라 **"RETRY 루프 도중 뜬 escalation 신호를, 나중에 `#41`이 정확히 읽을 수 있도록 최종 결과까지 잃지 않고 들고 가느냐"**였다.
+
+**결정: 신호를 억제하지 않고 누적해서 기억한다.** RETRY는 그대로 진행하되(같은 모델로 재채점 자체는 막지 않음), 라운드마다 `escalation`이 한 번이라도 `ESCALATE_MULTI_JUDGE`였는지를 그래프 상태에 누적해두고, 최종 PASS/FAIL이 확정되는 시점에 그 누적값을 최종 `escalation`에 되살린다. 이렇게 하면 그래프가 저장하는 최종 결과에서는 `verdict`가 항상 `PASS`/`FAIL` 중 하나이므로("RETRY"는 정의상 중간 상태라 저장되지 않음), "RETRY와 ESCALATE가 동시에 뜬 채로 저장된다"는 `#40`이 우려하던 상황 자체가 구조적으로 발생하지 않게 된다.
+
+### 12.3 구현
+
+`EvaluationState`에 `escalated_during_retries: bool`을 추가하고, `_supervisor_node`에서:
+
+```python
+escalated_so_far = state.get("escalated_during_retries", False) or (
+    supervision.get("escalation") == "ESCALATE_MULTI_JUDGE"
+)
+
+if supervision["verdict"] == "RETRY" and retry_count <= max_retries:
+    return Command(
+        goto="evaluate",
+        update={..., "escalated_during_retries": escalated_so_far},
+    )
+
+if escalated_so_far:
+    supervision = {**supervision, "escalation": "ESCALATE_MULTI_JUDGE"}
+return Command(goto=END, update={"supervision": supervision})
+```
+
+### 12.4 테스트
+
+`tests/test_evaluation_graph.py::test_escalation_during_retry_survives_to_final_verdict` — 1차 판정(RETRY)에서 `escalation="ESCALATE_MULTI_JUDGE"`가 뜨고, 2차(최종) 판정은 `escalation="NONE"`으로 PASS가 나오는 상황을 재현. 최종 `result["supervision"]["escalation"]`이 `"ESCALATE_MULTI_JUDGE"`로 유지되는지 확인한다. 대조군으로 `test_retry_loop_still_calls_evaluator_again`에 `escalation == "NONE"` 단언을 추가해, 애매하지 않았던 RETRY까지 오탐으로 켜지지 않는지도 같이 확인한다.
+
+## 13. 관련 커밋
 
 - `cbbad96` feat: add multi-judge escalation signal to Supervisor #38
 - `ffd863c` fix: separate Supervisor's escalation enum from recommendedAction free text #38
 - (미커밋) margin 기반 코드 신호 추가 + 부동소수점 보정 + 회귀 테스트/재현 스크립트
+- (미커밋) `#40`: RETRY 루프 중 뜬 escalation 신호를 최종 판정까지 유지

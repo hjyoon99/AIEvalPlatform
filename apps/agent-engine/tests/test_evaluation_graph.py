@@ -74,8 +74,14 @@ class FakeSupervisor:
     """Verifier가 무효 판정을 내리면 LLM 호출 없이 즉시 FAIL을 반환하는
     실제 SupervisorAgent의 규칙 기반 단축 로직을 흉내 낸 테스트 대역."""
 
-    def __init__(self, retry_once: bool = False):
+    def __init__(self, retry_once: bool = False, escalate_on_retry: bool = False):
         self.retry_once = retry_once
+        # RETRY 라운드(retry_count==0)의 응답에 escalation을
+        # "ESCALATE_MULTI_JUDGE"로 실어 보낼지. #40의 "RETRY 도중 뜬
+        # escalation 신호가 최종 판정까지 유실되지 않아야 한다"는 요구를
+        # 재현하기 위한 것 — 최종(2번째) 라운드는 일부러 NONE을 반환해서,
+        # 최종 escalation이 그 라운드 자체가 아니라 누적값에서 오는지 검증한다.
+        self.escalate_on_retry = escalate_on_retry
         self.calls = 0
 
     async def run(self, **kwargs) -> Dict[str, Any]:
@@ -88,6 +94,7 @@ class FakeSupervisor:
                 "reason": verification.get("reason", "유효성 검증에 실패했습니다."),
                 "issues": ["VERIFICATION_FAILED"],
                 "recommendedAction": "원본 AI 답변을 수정하거나 다시 생성하세요.",
+                "escalation": "NONE",
             }
         if self.retry_once and kwargs["retry_count"] == 0:
             return {
@@ -96,6 +103,7 @@ class FakeSupervisor:
                 "reason": "재평가가 필요합니다.",
                 "issues": [],
                 "recommendedAction": "다시 평가하세요.",
+                "escalation": "ESCALATE_MULTI_JUDGE" if self.escalate_on_retry else "NONE",
             }
         evaluation = kwargs["evaluation"]
         verdict = "PASS" if evaluation["score"] >= kwargs["pass_threshold"] else "FAIL"
@@ -105,6 +113,7 @@ class FakeSupervisor:
             "reason": "정상 판정",
             "issues": [],
             "recommendedAction": "",
+            "escalation": "NONE",
         }
 
 
@@ -347,3 +356,34 @@ async def test_retry_loop_still_calls_evaluator_again():
     assert evaluator.calls == 2
     assert result["retry_count"] == 1
     assert result["supervision"]["verdict"] == "PASS"
+    # 대조군: RETRY 라운드가 애매하지 않았다면(escalate_on_retry=False),
+    # 누적 로직이 괜히 최종 escalation을 켜버리는 오탐이 없어야 한다.
+    assert result["supervision"]["escalation"] == "NONE"
+
+
+@pytest.mark.asyncio
+async def test_escalation_during_retry_survives_to_final_verdict():
+    """가설(#40): 1차 판정(RETRY)에서 escalation="ESCALATE_MULTI_JUDGE"가
+    떴다가, RETRY 진입으로 `supervision`이 `None`으로 리셋되고 2차
+    판정(PASS)에서는 escalation="NONE"이 나와도, 최종 저장되는
+    `result["supervision"]["escalation"]`은 "ESCALATE_MULTI_JUDGE"로
+    유지되어야 한다 — 중간 라운드의 애매함 신호가 리셋 때문에 유실되면
+    안 된다."""
+    verifier = FakeVerifier(is_valid=True)
+    evaluator = FakeEvaluator(score=0.9)
+    supervisor = FakeSupervisor(retry_once=True, escalate_on_retry=True)
+    workflow = EvaluationWorkflow(
+        verifier=verifier,
+        evaluator=evaluator,
+        supervisor=supervisor,
+        groundedness=FakeGroundedness(),
+        tool_call=FakeToolCall(),
+    )
+
+    result = await workflow.run(
+        prompt="질문", output="괜찮은 답변", pass_threshold=0.7, max_retries=1
+    )
+
+    assert result["supervision"]["verdict"] == "PASS"
+    assert result["supervision"]["escalation"] == "ESCALATE_MULTI_JUDGE"
+    assert result["escalated_during_retries"] is True
