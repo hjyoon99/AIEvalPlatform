@@ -2,7 +2,12 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-from app.workflows.evaluation_graph import CONSENSUS_MODELS, EvaluationWorkflow
+from app.workflows.evaluation_graph import (
+    CONSENSUS_MODELS,
+    CONSENSUS_SPREAD_THRESHOLD,
+    EvaluationWorkflow,
+    _aggregate_consensus_results,
+)
 
 
 class FakeVerifier:
@@ -21,11 +26,15 @@ class FakeEvaluator:
         self.score = score
         self.calls = 0
         self.received_kwargs: Dict[str, Any] = {}
+        # #42 집계 테스트에서 triggeredFailConditions 등을 실어 보내려고
+        # 쓴다. 지정 안 하면 기본 metrics를 그대로 쓴다.
+        self.metrics_override: Optional[Dict[str, Any]] = None
 
     async def run(self, **kwargs) -> Dict[str, Any]:
         self.calls += 1
         self.received_kwargs = kwargs
-        return {"score": self.score, "metrics": {"reason": "채점 완료"}}
+        metrics = self.metrics_override or {"reason": "채점 완료"}
+        return {"score": self.score, "metrics": metrics}
 
 
 class FakeConsensusFactory:
@@ -44,12 +53,23 @@ class FakeConsensusFactory:
     한 번 발생했던 회귀다.
     """
 
-    def __init__(self, score: float = 0.8):
+    def __init__(
+        self,
+        score: float = 0.8,
+        scores_by_model: Optional[Dict[str, float]] = None,
+        metrics_by_model: Optional[Dict[str, Dict[str, Any]]] = None,
+    ):
         self.score = score
+        # 모델별로 다른 점수/metrics를 내야 하는 #42 집계 테스트(spread,
+        # fail_disagreement)를 위한 것. 지정 안 된 모델은 기본 self.score를 쓴다.
+        self.scores_by_model = scores_by_model or {}
+        self.metrics_by_model = metrics_by_model or {}
         self.created: Dict[str, FakeEvaluator] = {}
 
     def __call__(self, model: str) -> FakeEvaluator:
-        agent = FakeEvaluator(score=self.score)
+        agent = FakeEvaluator(score=self.scores_by_model.get(model, self.score))
+        if model in self.metrics_by_model:
+            agent.metrics_override = self.metrics_by_model[model]
         self.created[model] = agent
         return agent
 
@@ -201,10 +221,11 @@ def test_workers_only_connect_through_supervisor():
     """워커(verify/evaluate/skip_evaluation/groundedness_check/tool_call_check)가
     서로 직접 연결되지 않고, 반드시 supervisor를 거쳐서만 오간다는 그래프 구조를 검증한다.
 
-    `consensus_evaluator`(#41)는 의도적으로 이 집합에서 제외한다 — hub-and-spoke
-    패턴에 속하는 "워커"가 아니라, supervisor가 Send로 fan-out하고 곧장
-    END로 빠지는 별도 종류의 노드이기 때문이다(아래에서 그 토폴로지를
-    직접 검증한다)."""
+    `consensus_evaluator`/`aggregate_consensus`(#41/#42)는 의도적으로 이
+    집합에서 제외한다 — hub-and-spoke 패턴에 속하는 "워커"가 아니라,
+    supervisor가 Send로 fan-out하고 aggregate_consensus를 거쳐 곧장
+    END로 빠지는 별도 경로이기 때문이다(아래에서 그 토폴로지를 직접
+    검증한다)."""
     workflow = EvaluationWorkflow(
         verifier=FakeVerifier(is_valid=True),
         evaluator=FakeEvaluator(),
@@ -228,16 +249,28 @@ def test_workers_only_connect_through_supervisor():
             assert edge.source == "supervisor"
 
     # consensus_evaluator: supervisor에서만 들어오고(fan-out), 나갈 땐
-    # supervisor가 아니라 END로 간다 — 워커와는 다른 토폴로지임을 명시적으로 확인.
+    # supervisor가 아니라 aggregate_consensus로 간다(fan-in) — 워커와는
+    # 다른 토폴로지임을 명시적으로 확인.
     assert any(
         e.source == "supervisor" and e.target == "consensus_evaluator"
         for e in edges
     )
     assert any(
-        e.source == "consensus_evaluator" and e.target == "__end__" for e in edges
+        e.source == "consensus_evaluator" and e.target == "aggregate_consensus"
+        for e in edges
     )
     assert not any(
         e.source == "consensus_evaluator" and e.target == "supervisor"
+        for e in edges
+    )
+    # aggregate_consensus: consensus_evaluator에서만 들어오고, 곧장
+    # END로 나간다 — #42가 생기기 전까지는 aggregate_consensus 결과가
+    # supervisor로 되먹임되지 않는다.
+    assert any(
+        e.source == "aggregate_consensus" and e.target == "__end__" for e in edges
+    )
+    assert not any(
+        e.source == "aggregate_consensus" and e.target == "supervisor"
         for e in edges
     )
 
@@ -596,3 +629,144 @@ async def test_consensus_evaluator_node_works_with_real_default_factory():
     assert tagged["model"] == "qwen3.5:4b"
     assert "error" not in tagged.get("metrics", {})
     assert isinstance(tagged["score"], float)
+
+
+# ---------------------------------------------------------------------------
+# _aggregate_consensus_results — 순수 함수, Ollama 불필요 (#42)
+# ---------------------------------------------------------------------------
+
+
+def _consensus_result(model: str, score: float, **metrics_overrides) -> Dict[str, Any]:
+    """`_aggregate_consensus_results`에 넣을 fixture. 실제
+    `consensus_evaluator`가 반환하는 모양({"model", "score", "metrics"})을
+    흉내 낸다."""
+    metrics = {
+        "reason": "채점 완료",
+        "triggeredFailConditions": [],
+        "missingRequiredConditions": [],
+    }
+    metrics.update(metrics_overrides)
+    return {"model": model, "score": score, "metrics": metrics}
+
+
+def test_aggregate_consensus_converges_when_spread_is_low():
+    """가설(#42 시나리오 1 — spread 낮음): 3개 점수가 서로 가까우면
+    (spread <= CONSENSUS_SPREAD_THRESHOLD) CONVERGED로 분류돼야 한다."""
+    results = [
+        _consensus_result("qwen3.5:4b", 0.85),
+        _consensus_result("llama3.2:3b", 0.9),
+        _consensus_result("mistral:7b", 0.8),
+    ]
+
+    summary = _aggregate_consensus_results(results)
+
+    assert summary["verdict"] == "CONVERGED"
+    assert summary["spread"] == pytest.approx(0.1)  # 부동소수점 오차 방지
+    assert summary["medianScore"] == 0.85
+    assert summary["failDisagreement"] is False
+    assert summary["scoresByModel"] == {
+        "qwen3.5:4b": 0.85,
+        "llama3.2:3b": 0.9,
+        "mistral:7b": 0.8,
+    }
+
+
+def test_aggregate_consensus_flags_spread_too_high():
+    """가설(#42 시나리오 2 — spread 높음): 3개 점수가 크게 갈리면
+    (spread > CONSENSUS_SPREAD_THRESHOLD) SPREAD_TOO_HIGH로 분류돼야 한다."""
+    results = [
+        _consensus_result("qwen3.5:4b", 0.9),
+        _consensus_result("llama3.2:3b", 0.4),
+        _consensus_result("mistral:7b", 0.6),
+    ]
+
+    summary = _aggregate_consensus_results(results)
+
+    assert summary["spread"] == 0.5
+    assert summary["spread"] > CONSENSUS_SPREAD_THRESHOLD
+    assert summary["verdict"] == "SPREAD_TOO_HIGH"
+    assert summary["failDisagreement"] is False
+
+
+def test_aggregate_consensus_fail_disagreement_takes_priority_over_spread():
+    """가설(#42 시나리오 3 — fail_disagreement): 필수/실패조건 판정
+    자체가 모델 간에 갈리면(하나는 위반 발견, 나머지는 안 함) 점수
+    spread와 무관하게 FAIL_DISAGREEMENT로 분류돼야 한다 — #37 설계
+    원칙("평균으로 해결할 수 없는 의미 해석의 차이")에 따라 spread보다
+    우선순위가 높다. 실제 evaluator.py라면 위반 발견 시 score를 0으로
+    강제해 자연히 spread도 커지지만, 이 테스트는 그 상관관계와
+    무관하게 집계 함수 자체가 fail_disagreement를 먼저 보는지
+    직접 검증하기 위해 점수를 일부러 가깝게(spread 낮음) 뒀다."""
+    results = [
+        _consensus_result(
+            "qwen3.5:4b", 0.7, triggeredFailConditions=["확인되지 않은 환불 보장을 약속함"]
+        ),
+        _consensus_result("llama3.2:3b", 0.75),
+        _consensus_result("mistral:7b", 0.72),
+    ]
+
+    summary = _aggregate_consensus_results(results)
+
+    assert summary["spread"] <= CONSENSUS_SPREAD_THRESHOLD  # spread만 보면 CONVERGED감
+    assert summary["failDisagreement"] is True
+    assert summary["verdict"] == "FAIL_DISAGREEMENT"
+
+
+def test_aggregate_consensus_no_disagreement_when_all_models_agree_on_fail():
+    """대조군: 3개 모델 전부 동일하게 실패 조건을 발견했다면(또는 전부
+    발견 안 했다면) fail_disagreement가 아니다 — "판정이 갈렸다"가
+    아니라 "다들 똑같이 봤다"이므로."""
+    results = [
+        _consensus_result("qwen3.5:4b", 0.0, triggeredFailConditions=["위반"]),
+        _consensus_result("llama3.2:3b", 0.0, triggeredFailConditions=["위반"]),
+        _consensus_result("mistral:7b", 0.0, triggeredFailConditions=["위반"]),
+    ]
+
+    summary = _aggregate_consensus_results(results)
+
+    assert summary["failDisagreement"] is False
+    assert summary["verdict"] == "CONVERGED"
+
+
+# ---------------------------------------------------------------------------
+# aggregate_consensus 그래프 통합 (fan-out → fan-in) — Ollama 불필요 (#42)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_aggregate_consensus_runs_after_fan_in_with_per_model_scores():
+    """가설(#42): supervisor가 escalation을 확정하면 3개 모델로 fan-out되고,
+    LangGraph가 전원의 결과를 기다렸다가(fan-in) aggregate_consensus를
+    한 번 실행해 consensus_summary를 최종 결과에 남긴다."""
+    verifier = FakeVerifier(is_valid=True)
+    evaluator = FakeEvaluator(score=0.9)
+    supervisor = FakeSupervisor(escalate_final=True)
+    consensus_factory = FakeConsensusFactory(
+        scores_by_model={
+            "qwen3.5:4b": 0.9,
+            "llama3.2:3b": 0.4,
+            "mistral:7b": 0.6,
+        }
+    )
+    workflow = EvaluationWorkflow(
+        verifier=verifier,
+        evaluator=evaluator,
+        supervisor=supervisor,
+        groundedness=FakeGroundedness(),
+        tool_call=FakeToolCall(),
+        consensus_evaluator_factory=consensus_factory,
+    )
+
+    result = await workflow.run(
+        prompt="질문", output="괜찮은 답변", pass_threshold=0.7
+    )
+
+    assert len(result["consensus_results"]) == len(CONSENSUS_MODELS)
+    summary = result["consensus_summary"]
+    assert summary["verdict"] == "SPREAD_TOO_HIGH"
+    assert summary["spread"] == 0.5
+    assert summary["scoresByModel"] == {
+        "qwen3.5:4b": 0.9,
+        "llama3.2:3b": 0.4,
+        "mistral:7b": 0.6,
+    }

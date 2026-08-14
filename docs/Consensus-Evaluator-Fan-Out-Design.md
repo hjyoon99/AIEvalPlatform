@@ -1,6 +1,6 @@
-# Consensus Evaluator Fan-Out 설계 (Epic #37 / #41)
+# Consensus Evaluator Fan-Out / 집계 설계 (Epic #37 / #41 / #42)
 
-`#41`(consensus_evaluator 노드 구현, 병렬 fan-out)을 구현하며 나눈 논의, 발견한 문제와 해결 과정을 정리한다. 선행 문서: `docs/Supervisor-Escalation-Signal-Design.md`(`#38`/`#40`), `docs/ADR-Consensus-Judge-Models.md`(`#39`).
+`#41`(consensus_evaluator 노드 구현, 병렬 fan-out)과 `#42`(aggregate_consensus 집계 로직)를 구현하며 나눈 논의, 발견한 문제와 해결 과정을 정리한다. 선행 문서: `docs/Supervisor-Escalation-Signal-Design.md`(`#38`/`#40`), `docs/ADR-Consensus-Judge-Models.md`(`#39`).
 
 ## 1. 배경과 범위
 
@@ -71,7 +71,7 @@ workflow = EvaluationWorkflow(
 | `test_consensus_evaluator_instances_are_isolated` | 각 fan-out 인스턴스가 서로 다른 객체(다른 `id()`)를 쓴다 — 완료 조건 "인스턴스 간 완전한 격리" 직접 검증 |
 | `test_consensus_evaluator_does_not_receive_supervisor_feedback` | RETRY를 거쳐 `supervisor_feedback`이 상태에 있어도, `consensus_evaluator`가 받은 kwargs엔 없다(§2.3) |
 | `test_no_consensus_fan_out_when_not_escalated` | 대조군 — escalation이 안 뜨면 `consensus_evaluator`가 아예 호출 안 됨(비용 낭비 방지) |
-| `test_workers_only_connect_through_supervisor`(기존 확장) | `consensus_evaluator`가 hub-and-spoke 워커 집합 밖에 있고, `supervisor → consensus_evaluator → END` 토폴로지가 실제 컴파일된 그래프에 그대로 있는지 정적 엣지로 확인 |
+| `test_workers_only_connect_through_supervisor`(기존 확장) | `consensus_evaluator`가 hub-and-spoke 워커 집합 밖에 있고, `supervisor → consensus_evaluator` 토폴로지가 실제 컴파일된 그래프에 그대로 있는지 정적 엣지로 확인(`#42` 이후엔 `→ aggregate_consensus → END`로 이어짐, §7) |
 
 통합 테스트(`@pytest.mark.integration`, 로컬 Ollama 필요) 1개 추가:
 
@@ -92,8 +92,62 @@ pytest tests/test_evaluation_graph.py -v
 pytest tests/test_evaluation_graph.py -m integration -v
 ```
 
-## 6. 다음 단계 — 그리고 지금 빠져있는 연결고리
+## 6. `#42` — aggregate_consensus 집계 로직
 
-`#41`은 fan-out 메커니즘과 그래프 상태 안에서의 결과 수집까지만 담당한다. `consensus_results`(3개 모델의 독립 점수)를 실제로 다수결/편차 계산해 최종 판정에 반영하는 건 `#42`(aggregate_consensus)의 몫이다.
+### 6.1 설계
 
-**한 가지 확인해둘 게 있다: 지금은 `consensus_results`가 `EvaluationState`(그래프 내부 상태) 밖으로 전혀 안 나간다.** `app/main.py`의 `run_evaluation_pipeline`이 `graph_result`에서 `verification`/`evaluation`/`supervision`/`retry_count`만 꺼내 `result_payload`를 만들고 반환하는데, `consensus_results`는 이 목록에 없다 — 즉 fan-out이 실행되고 3개 결과가 그래프 상태에 잘 쌓여도, `/agents/evaluate/sync` 응답에도, Backend의 `EvalResult`에도 지금은 저장되지 않고 그래프 실행이 끝나는 순간 버려진다. `#42`가 집계 로직을 만들 때 이 연결(`main.py` → API 응답 → Backend 저장)도 같이 뚫어야 한다.
+이슈 문구가 구체적이라 논의는 짧게 마쳤다. `consensus_evaluator → aggregate_consensus → END`로 그래프를 연결(기존 `consensus_evaluator → END`를 대체)했다 — LangGraph가 fan-out된 `CONSENSUS_MODELS` 개수만큼의 `consensus_evaluator` 인스턴스가 전부 끝날 때까지 기다렸다가(fan-in) `aggregate_consensus`를 정확히 한 번만 호출해주므로, 별도의 대기/집계 동기화 로직이 필요 없었다.
+
+집계는 두 신호를 분리해서 본다.
+
+1. **점수 spread**(`max - min`)와 **중앙값**. `CONSENSUS_SPREAD_THRESHOLD = 0.3`(이슈 원문 잠정치) 이하면 수렴됨.
+2. **`fail_disagreement`**: `triggeredFailConditions`/`missingRequiredConditions`가 있다/없다 자체가 모델 간에 갈리는 경우. `#37` 설계 원칙("필수/실패조건 판정 불일치는 평균으로 해결할 수 없는 의미 해석의 차이이므로 무조건 사람 검토로 보낸다")에 따라 **spread보다 우선순위가 높다** — spread가 낮아도 fail_disagreement면 무조건 `FAIL_DISAGREEMENT`로 분류한다.
+
+세 시나리오는 `CONVERGED`(수렴) / `SPREAD_TOO_HIGH`(수렴 안 됨) / `FAIL_DISAGREEMENT`(의미 불일치, 항상 사람 검토)로 `consensus_summary`(새 상태 필드)에 저장된다. 순수 코드 집계라 LLM 호출이 전혀 없다.
+
+`aggregate_consensus`는 LLM 호출이 없는 순수 함수(`_aggregate_consensus_results`)를 감싼 노드라, `#38`/`#40`의 `_force_escalation_if_ambiguous`/`_apply_retry_exhaustion`과 같은 패턴(그래프 노드 안에 로직을 두지 않고 별도 테스트 가능한 함수로 추출)을 그대로 따랐다.
+
+### 6.2 구현 중 발견한 문제 — 같은 부동소수점 버그가 여기도 있었음
+
+`#38`에서 `BORDERLINE_SCORE_MARGIN` 비교식에 있었던 것과 똑같은 문제가 여기도 있었다. 테스트를 작성하며 점수 `[0.85, 0.9, 0.8]`의 spread를 확인했는데, 파이썬에서 `0.9 - 0.8`이 `0.09999999999999998`로 나왔다(단정 실패로 발견). 더 심각한 건 `[0.9, 0.6]`처럼 **정확히 threshold(0.3)에 걸치는 경계값**에서 `0.9 - 0.6 = 0.30000000000000004`가 나와 `> 0.3` 비교를 잘못 통과시킬 수 있다는 점 — 의도상 경계값은 `CONVERGED`(수렴)로 봐야 하는데, 부동소수점 오차 때문에 `SPREAD_TOO_HIGH`로 잘못 분류될 뻔했다.
+
+**해결**: `#38`과 동일한 패턴으로 아주 작은 오차(`1e-9`)만큼 여유를 두고 비교하도록 고쳤다.
+
+```python
+elif spread > CONSENSUS_SPREAD_THRESHOLD + 1e-9:
+    verdict = "SPREAD_TOO_HIGH"
+```
+
+## 7. `#42` 테스트
+
+`apps/agent-engine/tests/test_evaluation_graph.py`에 추가(전부 Ollama 불필요):
+
+| 테스트 | 검증하는 가설 |
+|---|---|
+| `test_aggregate_consensus_converges_when_spread_is_low` | 시나리오 1 — spread 낮음 → `CONVERGED` |
+| `test_aggregate_consensus_flags_spread_too_high` | 시나리오 2 — spread 높음 → `SPREAD_TOO_HIGH` |
+| `test_aggregate_consensus_fail_disagreement_takes_priority_over_spread` | 시나리오 3 — spread는 낮아도(경계 안) fail_disagreement면 `FAIL_DISAGREEMENT`가 우선 |
+| `test_aggregate_consensus_no_disagreement_when_all_models_agree_on_fail` | 대조군 — 3개 모델이 전부 동일하게 실패 조건을 발견하면 disagreement가 아니다 |
+| `test_aggregate_consensus_runs_after_fan_in_with_per_model_scores` | 그래프 통합 — fan-out(3개, 서로 다른 점수) → fan-in → `aggregate_consensus` 1회 실행 → `consensus_summary`가 최종 결과에 정확히 반영 |
+| `test_workers_only_connect_through_supervisor`(재확장) | `aggregate_consensus`가 `consensus_evaluator`에서만 들어오고 곧장 `END`로 나가는지, `supervisor`로 되먹임되지 않는지 정적 엣지로 확인 |
+
+**결과:** 기본 스위트 34개 통과(0.42초), 통합 스위트 10개 통과(33초, `#42`는 LLM 호출이 없어 통합 테스트 추가 없음).
+
+## 8. 실행 방법
+
+```bash
+cd apps/agent-engine
+source venv/bin/activate
+
+# 기본 테스트만 (Ollama 불필요)
+pytest tests/test_evaluation_graph.py -v
+
+# 통합 테스트까지 포함 (로컬 Ollama + qwen3.5:4b 필요)
+pytest tests/test_evaluation_graph.py -m integration -v
+```
+
+## 9. 다음 단계 — 그리고 지금 빠져있는 연결고리
+
+`#42`도 그래프 내부 상태(`consensus_summary`)까지만 채운다. 이걸로 실제 케이스 상태(`REVIEW_REQUIRED` vs `COMPLETED`)를 바꾸거나 Dashboard에 노출하는 건 아직 아무도 안 한다 — `#37` 다이어그램상 "Epic E"가 담당할 몫인데, 이 저장소엔 아직 Epic E 이슈 자체가 없다.
+
+**`#41`에서 남겼던 연결고리 문제가 그대로 남아있다.** `app/main.py`의 `run_evaluation_pipeline`이 `graph_result`에서 `verification`/`evaluation`/`supervision`/`retry_count`만 꺼내 `result_payload`를 만드는데, `consensus_results`도 `consensus_summary`도 이 목록에 없다 — fan-out·집계가 그래프 안에서는 잘 동작해도, `/agents/evaluate/sync` 응답에도 Backend의 `EvalResult`에도 지금은 저장되지 않고 그래프 실행이 끝나는 순간 버려진다. Epic E(또는 그 전 단계)에서 이 연결(`main.py` → API 응답 → Backend 저장 → Dashboard 표시)을 뚫어야 컨센서스 결과가 실제로 쓰일 수 있다.

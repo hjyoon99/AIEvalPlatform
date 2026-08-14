@@ -1,5 +1,6 @@
 import logging
 import operator
+import statistics
 from typing import Annotated, Any, Callable, Dict, List, Literal, Optional, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -19,6 +20,81 @@ logger = logging.getLogger(__name__)
 # 3종이다. [설계 결정 필요] 지금은 하드코딩이며, 나중에 EvalRun 설정으로
 # 옮길 여지를 남겨둔다.
 CONSENSUS_MODELS = ["qwen3.5:4b", "llama3.2:3b", "mistral:7b"]
+
+# 컨센서스 점수 spread(최댓값-최솟값)가 이 값을 넘으면 "수렴 안 됨"으로
+# 본다. [설계 결정 필요] 이슈 원문(#42)에 예시로 제시된 잠정치이며, Epic E
+# 에서 실측 데이터로 캘리브레이션 대상이다.
+CONSENSUS_SPREAD_THRESHOLD = 0.3
+
+
+def _aggregate_consensus_results(
+    consensus_results: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """컨센서스 3개 모델의 독립 채점 결과를 결정론적으로 집계한다(#42).
+
+    두 신호를 분리해서 본다:
+
+    1. **점수 spread**(`max(score) - min(score)`)와 **중앙값**. 모델들의
+       점수가 서로 가까우면(spread가 `CONSENSUS_SPREAD_THRESHOLD` 이하)
+       "수렴됨"으로 본다.
+    2. **`fail_disagreement`**: 모델 간에 `triggeredFailConditions`나
+       `missingRequiredConditions`가 있다/없다 자체가 갈리는 경우. `#37`
+       에픽 설계 원칙("필수/실패조건 판정 불일치는 별도로 다룬다 —
+       평균으로 해결할 수 없는 의미 해석의 차이이므로 무조건 사람
+       검토로 보낸다")에 따라, **spread가 낮아도 fail_disagreement면
+       무조건 그쪽으로 분류한다** — 두 신호 중 fail_disagreement가
+       우선순위가 높다.
+
+    예를 들어 한 모델만 정책 위반(`triggeredFailConditions`)을 발견해
+    score=0.0을 줬고 나머지는 안 그래서 score가 높다면, 이건 우연히
+    spread도 크지만 "점수가 좀 갈렸다"의 문제가 아니라 "판정 자체의
+    의미가 다르다"의 문제라 `FAIL_DISAGREEMENT`로 분류된다.
+
+    Args:
+        consensus_results: `consensus_evaluator`가 반환한, 모델명이
+            태깅된 결과 목록. 각 원소는 최소한 `score`(float)와
+            `metrics`(`triggeredFailConditions`/`missingRequiredConditions`
+            포함 가능) 키를 가진다.
+
+    Returns:
+        `verdict`("CONVERGED"|"SPREAD_TOO_HIGH"|"FAIL_DISAGREEMENT"),
+        `medianScore`, `spread`, `failDisagreement`(bool),
+        `scoresByModel`(모델명 → 점수 매핑) 키를 가진 딕셔너리.
+    """
+    scores = [result["score"] for result in consensus_results]
+    median_score = statistics.median(scores)
+    spread = max(scores) - min(scores)
+
+    def _has_fail_signal(result: Dict[str, Any]) -> bool:
+        metrics = result.get("metrics", {})
+        return bool(metrics.get("triggeredFailConditions")) or bool(
+            metrics.get("missingRequiredConditions")
+        )
+
+    fail_signals = [_has_fail_signal(result) for result in consensus_results]
+    fail_disagreement = len(set(fail_signals)) > 1
+
+    if fail_disagreement:
+        verdict = "FAIL_DISAGREEMENT"
+    # 부동소수점 오차 보정: 예를 들어 0.9 - 0.6은 수학적으로는 0.3이지만
+    # 파이썬에서는 0.30000000000000004가 되어 "> 0.3"을 잘못 통과할 수
+    # 있다(supervisor.py의 BORDERLINE_SCORE_MARGIN에서 겪었던 것과 같은
+    # 문제). threshold와 정확히 같은 경계값은 CONVERGED 쪽으로 보는 게
+    # 의도이므로, 아주 작은 오차(1e-9)만큼 여유를 둔다.
+    elif spread > CONSENSUS_SPREAD_THRESHOLD + 1e-9:
+        verdict = "SPREAD_TOO_HIGH"
+    else:
+        verdict = "CONVERGED"
+
+    return {
+        "verdict": verdict,
+        "medianScore": median_score,
+        "spread": spread,
+        "failDisagreement": fail_disagreement,
+        "scoresByModel": {
+            result["model"]: result["score"] for result in consensus_results
+        },
+    }
 
 
 class EvaluationState(TypedDict, total=False):
@@ -68,6 +144,10 @@ class EvaluationState(TypedDict, total=False):
             반환해도 LangGraph가 자동으로 이어붙여(concat) 최종적으로는
             전체 결과가 다 모인다 — 그래서 "덮어쓰기"가 아니라
             "누적"이어야 하고, 이 필드만 다른 필드들과 리듀서 방식이 다르다.
+        consensus_summary: `aggregate_consensus`가 `consensus_results`를
+            결정론적으로 집계한 결과(#42). `_aggregate_consensus_results`
+            참고. `consensus_results`가 비어있으면(에스컬레이션이 안
+            일어난 일반 케이스) `None`이다.
     """
 
     prompt: str
@@ -89,6 +169,7 @@ class EvaluationState(TypedDict, total=False):
     escalated_during_retries: bool
     consensus_model: str
     consensus_results: Annotated[List[Dict[str, Any]], operator.add]
+    consensus_summary: Optional[Dict[str, Any]]
 
 
 class EvaluationWorkflow:
@@ -178,9 +259,11 @@ class EvaluationWorkflow:
             `tool_call_check` 워커는 실행 후 고정 엣지로 무조건
             `supervisor`로만 복귀하며, `supervisor`는 매번 상태를 보고
             `Command(goto=...)`로 다음 워커(또는 `END`)를 결정한다.
-            `consensus_evaluator`(#41)만 예외로, `supervisor`가 `Send`로
-            fan-out한 뒤 곧장 `END`로 연결된다 — hub-and-spoke 패턴 밖의
-            fan-out 전용 노드이기 때문이다.
+            `consensus_evaluator`(#41)/`aggregate_consensus`(#42)만
+            예외로, `supervisor`가 `Send`로 `consensus_evaluator`를
+            fan-out하면 그 결과가 전부 모인 뒤 `aggregate_consensus`가
+            한 번 실행되고(LangGraph의 fan-in) 곧장 `END`로 간다 —
+            hub-and-spoke 패턴 밖의 fan-out/집계 전용 경로이기 때문이다.
         """
         builder = StateGraph(EvaluationState)
         builder.add_node(
@@ -202,6 +285,7 @@ class EvaluationWorkflow:
         builder.add_node("groundedness_check", self._groundedness_check)
         builder.add_node("tool_call_check", self._tool_call_check)
         builder.add_node("consensus_evaluator", self._consensus_evaluator)
+        builder.add_node("aggregate_consensus", self._aggregate_consensus)
 
         builder.add_edge(START, "supervisor")
         builder.add_edge("verify", "supervisor")
@@ -209,9 +293,11 @@ class EvaluationWorkflow:
         builder.add_edge("skip_evaluation", "supervisor")
         builder.add_edge("groundedness_check", "supervisor")
         builder.add_edge("tool_call_check", "supervisor")
-        # consensus_evaluator는 supervisor로 복귀하지 않는다 — #42가
-        # 생기기 전까지는 fan-out 결과를 모으기만 하고 곧장 종료한다.
-        builder.add_edge("consensus_evaluator", END)
+        # consensus_evaluator는 supervisor로 복귀하지 않는다 — fan-out된
+        # 인스턴스 전원이 끝나면(fan-in) aggregate_consensus가 한 번만
+        # 실행되고 곧장 종료한다(#42).
+        builder.add_edge("consensus_evaluator", "aggregate_consensus")
+        builder.add_edge("aggregate_consensus", END)
         return builder.compile()
 
     async def _verify(self, state: EvaluationState) -> Dict[str, Any]:
@@ -407,6 +493,25 @@ class EvaluationWorkflow:
             tool_call_result=state.get("tool_call_result"),
         )
         return {"consensus_results": [{"model": model, **result}]}
+
+    async def _aggregate_consensus(self, state: EvaluationState) -> Dict[str, Any]:
+        """`aggregate_consensus` 노드: fan-out된 컨센서스 결과를 집계한다(#42).
+
+        `consensus_evaluator`가 `CONSENSUS_MODELS` 개수만큼 fan-out된 뒤,
+        LangGraph가 그 전원의 실행이 끝날 때까지 기다렸다가(fan-in) 이
+        노드를 정확히 한 번만 호출한다 — 그래서 `state["consensus_results"]`
+        는 이 시점에 항상 `len(CONSENSUS_MODELS)`개가 다 모여있다. LLM
+        호출이 전혀 없는 순수 코드 집계다(`_aggregate_consensus_results`
+        참고).
+
+        Args:
+            state: `consensus_results`가 전부 채워진 상태.
+
+        Returns:
+            `{"consensus_summary": <_aggregate_consensus_results 결과>}`.
+        """
+        summary = _aggregate_consensus_results(state.get("consensus_results", []))
+        return {"consensus_summary": summary}
 
     async def _supervisor_node(self, state: EvaluationState) -> Command:
         """`supervisor` 노드: 누적된 상태를 보고 다음 행동을 매번 재판단하는 허브.
