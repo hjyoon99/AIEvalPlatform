@@ -300,6 +300,8 @@ Backend의 Judge Worker는 준비된 답변을 평가 큐에서 가져가 Agent 
 | [고객 Adapter 연동](./docs/Customer-Adapter-Integration-Guide.md) | 외부 AI 연결 방법 |
 | [트러블슈팅](./docs/troubleshooting.md) | 실행·DB·모델·평가 오류 점검 |
 | [Judge Worker 동시성과 로컬 Ollama 튜닝](./docs/Judge-Worker-Concurrency-Tuning.md) | N-way Judge 큐/SSE 구조, `JUDGE_WORKER_CONCURRENCY`·`OLLAMA_NUM_PARALLEL` 관계와 로컬 튜닝 기록 |
+| [Supervisor 에스컬레이션 신호 설계](./docs/Supervisor-Escalation-Signal-Design.md) | 다중 모델 컨센서스 에스컬레이션(`#38`/`#40`) 신호 설계, 논의와 실측 테스트 |
+| [ADR: 컨센서스용 로컬 모델 3종 확정](./docs/ADR-Consensus-Judge-Models.md) | `#39` 모델 벤치마크와 최종 선정 근거 |
 
 ## 개발 명령
 
