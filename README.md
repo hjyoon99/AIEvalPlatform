@@ -302,6 +302,7 @@ Backend의 Judge Worker는 준비된 답변을 평가 큐에서 가져가 Agent 
 | [Judge Worker 동시성과 로컬 Ollama 튜닝](./docs/Judge-Worker-Concurrency-Tuning.md) | N-way Judge 큐/SSE 구조, `JUDGE_WORKER_CONCURRENCY`·`OLLAMA_NUM_PARALLEL` 관계와 로컬 튜닝 기록 |
 | [Supervisor 에스컬레이션 신호 설계](./docs/Supervisor-Escalation-Signal-Design.md) | 다중 모델 컨센서스 에스컬레이션(`#38`/`#40`) 신호 설계, 논의와 실측 테스트 |
 | [ADR: 컨센서스용 로컬 모델 3종 확정](./docs/ADR-Consensus-Judge-Models.md) | `#39` 모델 벤치마크와 최종 선정 근거 |
+| [Consensus Evaluator Fan-Out 설계](./docs/Consensus-Evaluator-Fan-Out-Design.md) | `#41` 병렬 fan-out 노드 설계, 격리·anchoring 방지와 발견한 회귀 |
 
 ## 개발 명령
 

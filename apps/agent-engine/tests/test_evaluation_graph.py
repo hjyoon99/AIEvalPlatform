@@ -2,7 +2,7 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-from app.workflows.evaluation_graph import EvaluationWorkflow
+from app.workflows.evaluation_graph import CONSENSUS_MODELS, EvaluationWorkflow
 
 
 class FakeVerifier:
@@ -26,6 +26,32 @@ class FakeEvaluator:
         self.calls += 1
         self.received_kwargs = kwargs
         return {"score": self.score, "metrics": {"reason": "채점 완료"}}
+
+
+class FakeConsensusFactory:
+    """`consensus_evaluator_factory`(#41)의 테스트 대역.
+
+    실제 `EvaluatorAgent`를 만드는 대신, 모델명 하나당 새 `FakeEvaluator`
+    인스턴스를 만들어 `created`에 기록해둔다. 이걸로 두 가지를 검증할 수
+    있다: (1) fan-out된 각 모델이 서로 다른(격리된) 인스턴스를 썼는지,
+    (2) 각 인스턴스가 실제로 어떤 kwargs를 받았는지(`supervisor_feedback`이
+    새어 들어가지 않는지 등).
+
+    이 팩토리를 안 쓰고 기본값(진짜 `EvaluatorAgent`)을 그대로 두면,
+    escalation이 뜨는 테스트가 실제 Ollama를 호출해버려 기본 테스트
+    스위트가 느려지고 Ollama 의존성이 생긴다 — 실제로 이 파일의
+    `test_escalation_during_retry_survives_to_final_verdict`에서
+    한 번 발생했던 회귀다.
+    """
+
+    def __init__(self, score: float = 0.8):
+        self.score = score
+        self.created: Dict[str, FakeEvaluator] = {}
+
+    def __call__(self, model: str) -> FakeEvaluator:
+        agent = FakeEvaluator(score=self.score)
+        self.created[model] = agent
+        return agent
 
 
 class FakeGroundedness:
@@ -74,7 +100,12 @@ class FakeSupervisor:
     """Verifier가 무효 판정을 내리면 LLM 호출 없이 즉시 FAIL을 반환하는
     실제 SupervisorAgent의 규칙 기반 단축 로직을 흉내 낸 테스트 대역."""
 
-    def __init__(self, retry_once: bool = False, escalate_on_retry: bool = False):
+    def __init__(
+        self,
+        retry_once: bool = False,
+        escalate_on_retry: bool = False,
+        escalate_final: bool = False,
+    ):
         self.retry_once = retry_once
         # RETRY 라운드(retry_count==0)의 응답에 escalation을
         # "ESCALATE_MULTI_JUDGE"로 실어 보낼지. #40의 "RETRY 도중 뜬
@@ -82,6 +113,10 @@ class FakeSupervisor:
         # 재현하기 위한 것 — 최종(2번째) 라운드는 일부러 NONE을 반환해서,
         # 최종 escalation이 그 라운드 자체가 아니라 누적값에서 오는지 검증한다.
         self.escalate_on_retry = escalate_on_retry
+        # 최종(PASS/FAIL 확정) 라운드의 응답에 escalation을 직접 실어
+        # 보낼지. RETRY를 거치지 않고 바로 애매함이 뜨는, 실제로 더 흔한
+        # 경로(#41 fan-out 트리거)를 재현하기 위한 것.
+        self.escalate_final = escalate_final
         self.calls = 0
 
     async def run(self, **kwargs) -> Dict[str, Any]:
@@ -113,7 +148,7 @@ class FakeSupervisor:
             "reason": "정상 판정",
             "issues": [],
             "recommendedAction": "",
-            "escalation": "NONE",
+            "escalation": "ESCALATE_MULTI_JUDGE" if self.escalate_final else "NONE",
         }
 
 
@@ -164,7 +199,12 @@ async def test_valid_verification_still_calls_evaluator():
 
 def test_workers_only_connect_through_supervisor():
     """워커(verify/evaluate/skip_evaluation/groundedness_check/tool_call_check)가
-    서로 직접 연결되지 않고, 반드시 supervisor를 거쳐서만 오간다는 그래프 구조를 검증한다."""
+    서로 직접 연결되지 않고, 반드시 supervisor를 거쳐서만 오간다는 그래프 구조를 검증한다.
+
+    `consensus_evaluator`(#41)는 의도적으로 이 집합에서 제외한다 — hub-and-spoke
+    패턴에 속하는 "워커"가 아니라, supervisor가 Send로 fan-out하고 곧장
+    END로 빠지는 별도 종류의 노드이기 때문이다(아래에서 그 토폴로지를
+    직접 검증한다)."""
     workflow = EvaluationWorkflow(
         verifier=FakeVerifier(is_valid=True),
         evaluator=FakeEvaluator(),
@@ -180,11 +220,26 @@ def test_workers_only_connect_through_supervisor():
         "groundedness_check",
         "tool_call_check",
     }
-    for edge in workflow.graph.get_graph().edges:
+    edges = list(workflow.graph.get_graph().edges)
+    for edge in edges:
         if edge.source in workers:
             assert edge.target == "supervisor"
         if edge.target in workers:
             assert edge.source == "supervisor"
+
+    # consensus_evaluator: supervisor에서만 들어오고(fan-out), 나갈 땐
+    # supervisor가 아니라 END로 간다 — 워커와는 다른 토폴로지임을 명시적으로 확인.
+    assert any(
+        e.source == "supervisor" and e.target == "consensus_evaluator"
+        for e in edges
+    )
+    assert any(
+        e.source == "consensus_evaluator" and e.target == "__end__" for e in edges
+    )
+    assert not any(
+        e.source == "consensus_evaluator" and e.target == "supervisor"
+        for e in edges
+    )
 
 
 @pytest.mark.asyncio
@@ -372,12 +427,16 @@ async def test_escalation_during_retry_survives_to_final_verdict():
     verifier = FakeVerifier(is_valid=True)
     evaluator = FakeEvaluator(score=0.9)
     supervisor = FakeSupervisor(retry_once=True, escalate_on_retry=True)
+    # 누적된 escalation 때문에 최종적으로 #41 fan-out이 트리거된다 —
+    # 가짜 팩토리를 안 넣으면 기본값(진짜 EvaluatorAgent)이 실제 Ollama를
+    # 3번 호출해버린다(이 테스트에서 실제로 벌어졌던 회귀).
     workflow = EvaluationWorkflow(
         verifier=verifier,
         evaluator=evaluator,
         supervisor=supervisor,
         groundedness=FakeGroundedness(),
         tool_call=FakeToolCall(),
+        consensus_evaluator_factory=FakeConsensusFactory(),
     )
 
     result = await workflow.run(
@@ -387,3 +446,153 @@ async def test_escalation_during_retry_survives_to_final_verdict():
     assert result["supervision"]["verdict"] == "PASS"
     assert result["supervision"]["escalation"] == "ESCALATE_MULTI_JUDGE"
     assert result["escalated_during_retries"] is True
+
+
+@pytest.mark.asyncio
+async def test_consensus_fan_out_produces_tagged_result_per_model():
+    """가설(#41): 최종 판정에서 escalation이 뜨면, CONSENSUS_MODELS
+    개수만큼 consensus_evaluator가 fan-out되고, 각 결과가 모델명으로
+    태깅된 채 consensus_results에 전부 모인다 — operator.add 리듀서
+    덕분에 병렬로 반환된 원소 1개짜리 리스트들이 유실 없이 이어붙는다."""
+    verifier = FakeVerifier(is_valid=True)
+    evaluator = FakeEvaluator(score=0.9)
+    supervisor = FakeSupervisor(escalate_final=True)
+    consensus_factory = FakeConsensusFactory(score=0.8)
+    workflow = EvaluationWorkflow(
+        verifier=verifier,
+        evaluator=evaluator,
+        supervisor=supervisor,
+        groundedness=FakeGroundedness(),
+        tool_call=FakeToolCall(),
+        consensus_evaluator_factory=consensus_factory,
+    )
+
+    result = await workflow.run(
+        prompt="질문", output="괜찮은 답변", pass_threshold=0.7
+    )
+
+    assert result["supervision"]["escalation"] == "ESCALATE_MULTI_JUDGE"
+    assert len(result["consensus_results"]) == len(CONSENSUS_MODELS)
+    tagged_models = {r["model"] for r in result["consensus_results"]}
+    assert tagged_models == set(CONSENSUS_MODELS)
+    for r in result["consensus_results"]:
+        assert r["score"] == 0.8
+
+
+@pytest.mark.asyncio
+async def test_consensus_evaluator_instances_are_isolated():
+    """가설(#41 완료 조건 "인스턴스 간 완전한 격리"): fan-out된 각 모델은
+    factory가 매번 새로 만든 서로 다른 EvaluatorAgent 인스턴스를 쓴다 —
+    하나를 재사용해서 상태를 공유하지 않는다."""
+    verifier = FakeVerifier(is_valid=True)
+    evaluator = FakeEvaluator(score=0.9)
+    supervisor = FakeSupervisor(escalate_final=True)
+    consensus_factory = FakeConsensusFactory()
+    workflow = EvaluationWorkflow(
+        verifier=verifier,
+        evaluator=evaluator,
+        supervisor=supervisor,
+        groundedness=FakeGroundedness(),
+        tool_call=FakeToolCall(),
+        consensus_evaluator_factory=consensus_factory,
+    )
+
+    await workflow.run(prompt="질문", output="괜찮은 답변", pass_threshold=0.7)
+
+    assert len(consensus_factory.created) == len(CONSENSUS_MODELS)
+    instances = list(consensus_factory.created.values())
+    assert len({id(instance) for instance in instances}) == len(instances)
+    for instance in instances:
+        assert instance.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_consensus_evaluator_does_not_receive_supervisor_feedback():
+    """가설(#41): 1차 Supervisor가 RETRY로 남긴 supervisor_feedback이
+    있어도(재평가 사유), consensus_evaluator는 이걸 EvaluatorAgent에
+    넘기지 않는다 — 1차 판정의 근거가 컨센서스 모델에게 새어 들어가면
+    "서로의 결과를 안 본다"는 #37 원칙(anchoring 방지)이 깨지기 때문이다."""
+    verifier = FakeVerifier(is_valid=True)
+    evaluator = FakeEvaluator(score=0.9)
+    supervisor = FakeSupervisor(retry_once=True, escalate_final=True)
+    consensus_factory = FakeConsensusFactory()
+    workflow = EvaluationWorkflow(
+        verifier=verifier,
+        evaluator=evaluator,
+        supervisor=supervisor,
+        groundedness=FakeGroundedness(),
+        tool_call=FakeToolCall(),
+        consensus_evaluator_factory=consensus_factory,
+    )
+
+    result = await workflow.run(
+        prompt="질문", output="괜찮은 답변", pass_threshold=0.7, max_retries=1
+    )
+
+    # RETRY를 한 번 거쳤으니 supervisor_feedback 자체는 상태에 존재해야 한다.
+    assert result.get("supervisor_feedback") == "재평가가 필요합니다."
+    # 그런데도 consensus_evaluator가 받은 kwargs엔 없어야 한다.
+    for instance in consensus_factory.created.values():
+        assert "supervisor_feedback" not in instance.received_kwargs
+
+
+@pytest.mark.asyncio
+async def test_no_consensus_fan_out_when_not_escalated():
+    """대조군: escalation이 뜨지 않는 평범한 케이스에서는 consensus_evaluator가
+    아예 호출되지 않아야 한다 — 애매하지 않은 케이스까지 매번 3개 모델을
+    추가로 돌리면 비용 낭비다."""
+    verifier = FakeVerifier(is_valid=True)
+    evaluator = FakeEvaluator(score=0.9)
+    supervisor = FakeSupervisor()
+    consensus_factory = FakeConsensusFactory()
+    workflow = EvaluationWorkflow(
+        verifier=verifier,
+        evaluator=evaluator,
+        supervisor=supervisor,
+        groundedness=FakeGroundedness(),
+        tool_call=FakeToolCall(),
+        consensus_evaluator_factory=consensus_factory,
+    )
+
+    result = await workflow.run(
+        prompt="질문", output="괜찮은 답변", pass_threshold=0.7
+    )
+
+    assert result["supervision"]["escalation"] == "NONE"
+    assert result["consensus_results"] == []
+    assert consensus_factory.created == {}
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_consensus_evaluator_node_works_with_real_default_factory():
+    """가설(#41 통합): `consensus_evaluator_factory`를 안 넘기면 기본값인
+    실제 `EvaluatorAgent`가 쓰여서, 실제 로컬 Ollama로 구조화 출력을 낸다.
+    세 모델 각각의 구조화 출력 준수율은 `#39` 벤치마크
+    (`scripts/benchmark_judge_models.py`, `docs/ADR-Consensus-Judge-Models.md`)
+    에서 이미 확인했으므로, 여기서는 그래프 노드 자체가 실제 에이전트와
+    맞물려도 정상 동작하는지만 대표로 하나 확인한다."""
+    workflow = EvaluationWorkflow(
+        verifier=FakeVerifier(is_valid=True),
+        evaluator=FakeEvaluator(),
+        supervisor=FakeSupervisor(),
+        groundedness=FakeGroundedness(),
+        tool_call=FakeToolCall(),
+        # consensus_evaluator_factory 생략 → 기본값(진짜 EvaluatorAgent) 사용
+    )
+
+    state = {
+        "prompt": "대한민국의 수도는?",
+        "output": "서울입니다.",
+        "expected_output": "서울",
+        "criteria": [],
+        "agent_prompts": {},
+        "pass_threshold": 0.7,
+        "consensus_model": "qwen3.5:4b",
+    }
+    result = await workflow._consensus_evaluator(state)
+
+    tagged = result["consensus_results"][0]
+    assert tagged["model"] == "qwen3.5:4b"
+    assert "error" not in tagged.get("metrics", {})
+    assert isinstance(tagged["score"], float)

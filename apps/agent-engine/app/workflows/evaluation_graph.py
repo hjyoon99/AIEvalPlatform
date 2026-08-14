@@ -1,8 +1,9 @@
 import logging
-from typing import Any, Dict, List, Literal, Optional, TypedDict
+import operator
+from typing import Annotated, Any, Callable, Dict, List, Literal, Optional, TypedDict
 
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import Command
+from langgraph.types import Command, Send
 
 from app.agents import (
     EvaluatorAgent,
@@ -13,6 +14,11 @@ from app.agents import (
 )
 
 logger = logging.getLogger(__name__)
+
+# #39 ADR(docs/ADR-Consensus-Judge-Models.md)에서 확정한 컨센서스용 모델
+# 3종이다. [설계 결정 필요] 지금은 하드코딩이며, 나중에 EvalRun 설정으로
+# 옮길 여지를 남겨둔다.
+CONSENSUS_MODELS = ["qwen3.5:4b", "llama3.2:3b", "mistral:7b"]
 
 
 class EvaluationState(TypedDict, total=False):
@@ -51,6 +57,17 @@ class EvaluationState(TypedDict, total=False):
             score도 경계선이 아니었더라도 최종 `escalation`을
             "ESCALATE_MULTI_JUDGE"로 강제한다. 한 번이라도 애매했던
             케이스는 끝까지 애매했던 케이스로 취급한다는 뜻이다.
+        consensus_model: `consensus_evaluator` 노드 하나의 인스턴스가
+            담당할 모델명(#41). `Send("consensus_evaluator", {...,
+            "consensus_model": model})`로 fan-out될 때만 채워지며,
+            일반 단일 모델 경로에서는 쓰이지 않는다.
+        consensus_results: `consensus_evaluator`가 반환한, 모델명이
+            태깅된 독립 채점 결과 목록(#41). `Annotated[..., operator.add]`
+            리듀서라서, `CONSENSUS_MODELS` 개수만큼 병렬로 뜬
+            `consensus_evaluator` 인스턴스들이 각자 원소 1개짜리 리스트를
+            반환해도 LangGraph가 자동으로 이어붙여(concat) 최종적으로는
+            전체 결과가 다 모인다 — 그래서 "덮어쓰기"가 아니라
+            "누적"이어야 하고, 이 필드만 다른 필드들과 리듀서 방식이 다르다.
     """
 
     prompt: str
@@ -70,6 +87,8 @@ class EvaluationState(TypedDict, total=False):
     groundedness_result: Optional[Dict[str, Any]]
     tool_call_result: Optional[Dict[str, Any]]
     escalated_during_retries: bool
+    consensus_model: str
+    consensus_results: Annotated[List[Dict[str, Any]], operator.add]
 
 
 class EvaluationWorkflow:
@@ -95,13 +114,18 @@ class EvaluationWorkflow:
     판정을 실제 노드 이동으로 바꾸는 라우팅 자체는 코드가 제한된 enum
     값(`verify`/`evaluate`/`skip_evaluation`/`END`)만으로 결정한다.
 
+    `consensus_evaluator`(#41)는 이 hub-and-spoke 패턴 밖에 있는 별도
+    노드다. `supervisor`가 최종 판정에서 `escalation="ESCALATE_MULTI_JUDGE"`를
+    확정하면, 다른 워커들처럼 `supervisor`로 돌아오는 대신
+    `Send`로 `CONSENSUS_MODELS` 개수만큼 병렬 fan-out되고, 각 인스턴스는
+    실행 후 `supervisor`가 아니라 곧장 `END`로 간다 — 아직 `#42`
+    (aggregate_consensus)가 없어서 fan-out 결과를 모으기만 하고
+    최종 판정에 반영하지는 않는다.
+
     용어 주의: 여기서 "supervisor"는 이 그래프 안의 라우팅 허브 노드를
     가리키며, Backend의 `JudgeJob`/`JudgeWorker`(Agent Engine 전체 호출
     1건을 감싸는 큐 테이블/워커, `apps/backend/prisma/schema.prisma`)와는
-    다른 개념이다. 향후 다중 모델 합의(consensus) 로직을 노드로 추가할
-    때는 `consensus_evaluator`/`aggregate_consensus`처럼 명명하고,
-    `JudgeJob`/`JudgeWorker`가 이미 쓰고 있는 `judge_*` 접두어는 쓰지
-    않는다.
+    다른 개념이다.
     """
 
     def __init__(
@@ -111,20 +135,30 @@ class EvaluationWorkflow:
         supervisor: SupervisorAgent,
         groundedness: GroundednessAgent,
         tool_call: ToolCallCheckAgent,
+        consensus_evaluator_factory: Callable[[str], EvaluatorAgent] = EvaluatorAgent,
     ):
-        """다섯 에이전트를 주입받아 LangGraph 상태 그래프를 컴파일한다.
+        """다섯 에이전트와 컨센서스 팩토리를 주입받아 LangGraph 상태 그래프를 컴파일한다.
 
         Args:
             verifier: 1차 유효성/안전성 검증을 수행하는 `VerifierAgent`.
-            evaluator: 지표 기반 채점을 수행하는 `EvaluatorAgent`.
+            evaluator: 지표 기반 채점을 수행하는 `EvaluatorAgent`(단일
+                모델 경로용).
             supervisor: 최종 PASS/FAIL/RETRY 판정을 내리는 `SupervisorAgent`.
             groundedness: RAG 답변의 근거 충실성을 검증하는 `GroundednessAgent`.
             tool_call: 도구 호출의 파라미터 타당성/필요성을 검증하는
                 `ToolCallCheckAgent`.
+            consensus_evaluator_factory: 모델명 하나를 받아 그 모델용
+                `EvaluatorAgent` 인스턴스를 새로 만드는 팩토리(#41). 기본값은
+                `EvaluatorAgent` 클래스 자체(`EvaluatorAgent(model)`과 동일).
+                `consensus_evaluator` 노드가 fan-out될 때마다 이 팩토리로
+                매번 새 인스턴스를 만들어, 병렬로 뜬 다른 인스턴스와 상태를
+                공유하지 않는 완전한 격리를 보장한다. 테스트에서는 실제
+                Ollama 호출 없는 가짜 팩토리로 교체할 수 있다.
 
         Attributes set:
             verifier, evaluator, supervisor, groundedness, tool_call:
                 주입된 각 에이전트 인스턴스.
+            consensus_evaluator_factory: 주입된 컨센서스 팩토리.
             graph: `_build_graph`로 컴파일된 실행 가능한 LangGraph 그래프.
         """
         self.verifier = verifier
@@ -132,6 +166,7 @@ class EvaluationWorkflow:
         self.supervisor = supervisor
         self.groundedness = groundedness
         self.tool_call = tool_call
+        self.consensus_evaluator_factory = consensus_evaluator_factory
         self.graph = self._build_graph()
 
     def _build_graph(self):
@@ -143,6 +178,9 @@ class EvaluationWorkflow:
             `tool_call_check` 워커는 실행 후 고정 엣지로 무조건
             `supervisor`로만 복귀하며, `supervisor`는 매번 상태를 보고
             `Command(goto=...)`로 다음 워커(또는 `END`)를 결정한다.
+            `consensus_evaluator`(#41)만 예외로, `supervisor`가 `Send`로
+            fan-out한 뒤 곧장 `END`로 연결된다 — hub-and-spoke 패턴 밖의
+            fan-out 전용 노드이기 때문이다.
         """
         builder = StateGraph(EvaluationState)
         builder.add_node(
@@ -154,6 +192,7 @@ class EvaluationWorkflow:
                 "skip_evaluation",
                 "groundedness_check",
                 "tool_call_check",
+                "consensus_evaluator",
                 END,
             ),
         )
@@ -162,6 +201,7 @@ class EvaluationWorkflow:
         builder.add_node("skip_evaluation", self._skip_evaluation)
         builder.add_node("groundedness_check", self._groundedness_check)
         builder.add_node("tool_call_check", self._tool_call_check)
+        builder.add_node("consensus_evaluator", self._consensus_evaluator)
 
         builder.add_edge(START, "supervisor")
         builder.add_edge("verify", "supervisor")
@@ -169,6 +209,9 @@ class EvaluationWorkflow:
         builder.add_edge("skip_evaluation", "supervisor")
         builder.add_edge("groundedness_check", "supervisor")
         builder.add_edge("tool_call_check", "supervisor")
+        # consensus_evaluator는 supervisor로 복귀하지 않는다 — #42가
+        # 생기기 전까지는 fan-out 결과를 모으기만 하고 곧장 종료한다.
+        builder.add_edge("consensus_evaluator", END)
         return builder.compile()
 
     async def _verify(self, state: EvaluationState) -> Dict[str, Any]:
@@ -318,6 +361,53 @@ class EvaluationWorkflow:
         )
         return {"evaluation": evaluation}
 
+    async def _consensus_evaluator(self, state: EvaluationState) -> Dict[str, Any]:
+        """`consensus_evaluator` 노드: 컨센서스 모델 하나로 독립적으로
+        재채점한다(#41).
+
+        `supervisor`가 최종 판정에서 `escalation="ESCALATE_MULTI_JUDGE"`를
+        확정하면, `CONSENSUS_MODELS` 개수만큼 `Send`로 이 노드가 병렬
+        fan-out된다. 이 노드 자체는 hub-and-spoke 패턴 밖에 있어 실행 후
+        `supervisor`로 돌아가지 않고 곧장 `END`로 간다(`_build_graph`).
+
+        `state["supervisor_feedback"]`은 의도적으로 넘기지 않는다 — 1차
+        Supervisor의 재평가 사유가 컨센서스 모델에게 새어 들어가면,
+        컨센서스 모델들이 서로(그리고 1차 판정과도) 독립적이어야 한다는
+        `#37` 설계 원칙(anchoring 방지)이 깨지기 때문이다.
+
+        Args:
+            state: 최소한 `prompt`, `output`, `pass_threshold`, 그리고 이
+                인스턴스가 담당할 `consensus_model`을 포함하는 상태. 이
+                필드는 `Send("consensus_evaluator", {**state,
+                "consensus_model": model})`로 fan-out될 때만 채워진다.
+
+        Returns:
+            `{"consensus_results": [{"model": <담당 모델명>,
+            **EvaluatorAgent.run 결과}]}`. `consensus_results`는
+            `Annotated[..., operator.add]` 리듀서라서, 병렬로 뜬 다른
+            `consensus_evaluator` 인스턴스가 반환한 원소 1개짜리 리스트와
+            자동으로 이어붙여진다 — 그래서 이 노드는 항상 리스트 하나에
+            결과 하나만 담아 반환하면 되고, 최종적으로는
+            `len(CONSENSUS_MODELS)`개가 다 모인 리스트가 된다.
+        """
+        model = state["consensus_model"]
+        # 매 fan-out 인스턴스마다 새 EvaluatorAgent를 만든다 — 병렬로 뜬
+        # 다른 인스턴스와 상태(예: 내부 클라이언트)를 공유하지 않는
+        # 완전한 격리를 보장하기 위함이다(#41 완료 조건).
+        agent = self.consensus_evaluator_factory(model)
+        result = await agent.run(
+            prompt=state["prompt"],
+            output=state["output"],
+            expected_output=state.get("expected_output"),
+            criteria=state.get("criteria"),
+            system_prompt=state.get("agent_prompts", {}).get("evaluator"),
+            pass_threshold=state.get("pass_threshold", 0.7),
+            model=model,
+            groundedness_result=state.get("groundedness_result"),
+            tool_call_result=state.get("tool_call_result"),
+        )
+        return {"consensus_results": [{"model": model, **result}]}
+
     async def _supervisor_node(self, state: EvaluationState) -> Command:
         """`supervisor` 노드: 누적된 상태를 보고 다음 행동을 매번 재판단하는 허브.
 
@@ -395,6 +485,21 @@ class EvaluationWorkflow:
             # 리셋으로 잃지 않고 최종 escalation에 그대로 되살린다.
             if escalated_so_far:
                 supervision = {**supervision, "escalation": "ESCALATE_MULTI_JUDGE"}
+                # 애매함이 확정되면 END로 바로 가지 않고, 컨센서스 모델
+                # 전원에게 동시에(#41) 독립 재채점을 맡긴다. #42
+                # (aggregate_consensus)가 생기기 전까지는 fan-out 결과를
+                # 모으기만 하고, 최종 판정 자체는 여전히 1차 supervision을
+                # 그대로 쓴다.
+                return Command(
+                    goto=[
+                        Send(
+                            "consensus_evaluator",
+                            {**state, "consensus_model": model},
+                        )
+                        for model in CONSENSUS_MODELS
+                    ],
+                    update={"supervision": supervision},
+                )
             return Command(goto=END, update={"supervision": supervision})
 
         # 방어적 처리: verification/evaluation/supervision이 모두 채워진
@@ -432,7 +537,8 @@ class EvaluationWorkflow:
 
         Returns:
             그래프 실행이 끝난 뒤의 최종 `EvaluationState`
-            (`verification`, `evaluation`, `supervision`, `retry_count` 등 포함).
+            (`verification`, `evaluation`, `supervision`, `retry_count`,
+            그리고 컨센서스로 에스컬레이션됐다면 `consensus_results` 등 포함).
         """
         return await self.graph.ainvoke(
             {
@@ -446,5 +552,6 @@ class EvaluationWorkflow:
                 "criteria": criteria or [],
                 "agent_prompts": agent_prompts or {},
                 "output_metadata": output_metadata or {},
+                "consensus_results": [],
             }
         )
