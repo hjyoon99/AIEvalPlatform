@@ -16,6 +16,56 @@ from app.workflows import EvaluationWorkflow
 
 load_dotenv()
 
+
+def _attach_consensus_detail(
+    eval_result: Dict[str, Any],
+    consensus_results: Optional[List[Dict[str, Any]]],
+    consensus_summary: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """평가 결과에 컨센서스(#41/#42) 상세를 감사 가능한 형태로 덧붙인다(#43).
+
+    `consensus_results`/`consensus_summary`는 `EvaluationWorkflow.run()`이
+    반환하는 그래프 내부 상태(`EvaluationState`)에만 있던 값이라, 이
+    함수를 거치지 않으면 API 응답과 Backend `EvalResult.evaluation`
+    JSONB에 전혀 반영되지 않는다(#41/#42 문서에 남겨뒀던 연결고리).
+
+    필드명 극성 주의: 그래프 쪽 내부 값은 `failDisagreement`(모델 간
+    불일치 여부, True=불일치)인데 반해, 이 함수가 만드는
+    `consensusDetail.failConditionAgreement`는 `#43` 이슈가 요구하는
+    이름 그대로 "합의 여부"(True=합의)라 **극성이 반대**다. 그대로
+    복사하면 의미가 뒤집히므로 반드시 부정(`not`)해서 옮긴다.
+
+    Args:
+        eval_result: `EvaluatorAgent.run()`(또는 skip stub) 결과.
+        consensus_results: `consensus_evaluator`가 태깅해 반환한 목록.
+            에스컬레이션이 없었으면 빈 리스트 또는 `None`.
+        consensus_summary: `aggregate_consensus`가 계산한 집계 결과
+            (`_aggregate_consensus_results`). 에스컬레이션이 없었으면 `None`.
+
+    Returns:
+        `eval_result`의 모든 키를 유지한 채 `consensusApplied`(bool)와
+        `consensusDetail`(컨센서스가 적용됐으면 `models`/`scores`/
+        `spread`/`failConditionAgreement`/`verdict`를 담은 딕셔너리,
+        아니면 `None`)를 추가한 새 딕셔너리.
+    """
+    consensus_results = consensus_results or []
+    return {
+        **eval_result,
+        "consensusApplied": bool(consensus_results),
+        "consensusDetail": (
+            {
+                "models": [r["model"] for r in consensus_results],
+                "scores": [r["score"] for r in consensus_results],
+                "spread": consensus_summary["spread"],
+                "failConditionAgreement": not consensus_summary["failDisagreement"],
+                "verdict": consensus_summary["verdict"],
+            }
+            if consensus_summary
+            else None
+        ),
+    }
+
+
 app = FastAPI(
     title="AI Agent Evaluation Engine",
     description="LangGraph Supervisor 패턴 기반 AI 답변 품질 평가 API",
@@ -189,7 +239,10 @@ async def run_evaluation_pipeline(request: EvalRequest):
         데이터셋 항목별 결과 딕셔너리 목록. 각 항목은 `prompt`, `output`,
         `expectedOutput`, `outputSource`("provided" 또는 "generated"),
         `score`, `passed`, `verdict`, `verification`, `evaluation`,
-        `supervision`, `retryCount`, `metrics`를 포함한다.
+        `supervision`, `retryCount`, `metrics`를 포함한다. `evaluation`에는
+        `consensusApplied`(bool)와, 컨센서스가 적용된 경우
+        `consensusDetail`(models/scores/spread/failConditionAgreement/
+        verdict)도 함께 담긴다(#43).
     """
     test_dataset = request.dataset or [
         EvalDatasetItem(
@@ -239,6 +292,14 @@ async def run_evaluation_pipeline(request: EvalRequest):
         verification = graph_result["verification"]
         eval_result = graph_result["evaluation"]
         supervision = graph_result["supervision"]
+
+        # #43: 컨센서스(#41/#42)가 적용된 케이스면 그 상세를 evaluation
+        # JSONB에 감사 가능한 형태로 남긴다(#41/#42 문서에 남겨둔 연결고리).
+        eval_result = _attach_consensus_detail(
+            eval_result,
+            graph_result.get("consensus_results"),
+            graph_result.get("consensus_summary"),
+        )
 
         print(f"🔍 Agent 2 Verification: {verification}")
         print(f"📊 Agent 3 Evaluation: {eval_result}")
