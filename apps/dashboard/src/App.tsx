@@ -41,6 +41,15 @@ type EvalResult = {
         reason?: string;
       }[];
     };
+    // 컨센서스(다중 모델 합의, Epic #37)가 적용된 케이스에서만 채워진다.
+    consensusApplied?: boolean;
+    consensusDetail?: {
+      models: string[];
+      scores: number[];
+      spread: number;
+      failConditionAgreement: boolean;
+      verdict: 'CONVERGED' | 'SPREAD_TOO_HIGH' | 'FAIL_DISAGREEMENT';
+    } | null;
   };
   supervision?: {
     verdict?: string;
@@ -891,6 +900,7 @@ function ResultExplorerCard({
     label: metric.name,
     value: metric.score,
   }));
+  const consensus = result.evaluation?.consensusDetail;
 
   return (
     <article className="explorer-card">
@@ -905,6 +915,14 @@ function ResultExplorerCard({
           <strong>{Math.round(result.score * 100)}</strong>
           <span>quality score</span>
           <VerdictBadge verdict={result.verdict} />
+          {consensus && (
+            <span
+              className={`consensus-badge ${consensus.verdict.toLowerCase()}`}
+              title={`${consensus.models.length}개 모델 독립 재채점, spread ${consensus.spread.toFixed(2)}`}
+            >
+              CONSENSUS
+            </span>
+          )}
         </div>
       </div>
 
@@ -982,6 +1000,31 @@ function ResultExplorerCard({
               : `Retry ${result.retryCount}`
           }
         />
+        {consensus && (
+          <AgentStep
+            number="04"
+            name="Consensus"
+            role="다중 모델 합의 검증"
+            status={consensus.verdict}
+            tone={
+              consensus.verdict === 'CONVERGED'
+                ? 'pass'
+                : consensus.verdict === 'FAIL_DISAGREEMENT'
+                  ? 'fail'
+                  : 'warn'
+            }
+            reason={`${consensus.models.length}개 모델이 서로의 결과를 보지 않고 독립적으로 재채점했습니다. 점수 편차(spread) ${consensus.spread.toFixed(2)}.`}
+            metrics={consensus.models.map((model, i) => ({
+              label: model,
+              value: consensus.scores[i],
+            }))}
+            footer={
+              consensus.failConditionAgreement
+                ? '필수/실패조건 판정: 모델 간 합의'
+                : '필수/실패조건 판정: 모델 간 불일치 — 사람 검토 필요'
+            }
+          />
+        )}
       </div>
     </article>
   );

@@ -574,6 +574,32 @@ select:focus {
   background: #fff6df;
 }
 
+/* 컨센서스(다중 모델 합의, #43)가 적용된 케이스를 구분 표시한다. */
+.consensus-badge {
+  padding: 4px 7px;
+  border-radius: 5px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  grid-column: span 2;
+  justify-self: end;
+}
+
+.consensus-badge.converged {
+  color: #24875f;
+  background: #e8f8f1;
+}
+
+.consensus-badge.spread_too_high {
+  color: #9a6b1e;
+  background: #fff6df;
+}
+
+.consensus-badge.fail_disagreement {
+  color: #b64c46;
+  background: #fff0ef;
+}
+
 .section-description {
   margin: 6px 0 0;
   color: #9299a7;
@@ -737,7 +763,9 @@ select:focus {
 
 .agent-timeline {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  /* Consensus(#43)가 적용된 케이스는 4번째 카드가 추가되므로, 3열 고정
+     대신 자동으로 열 수를 맞춘다. */
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 14px;
   padding: 18px;
 }

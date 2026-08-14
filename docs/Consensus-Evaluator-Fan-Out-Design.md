@@ -1,6 +1,6 @@
-# Consensus Evaluator Fan-Out / 집계 설계 (Epic #37 / #41 / #42)
+# Consensus Evaluator Fan-Out / 집계 / 저장 설계 (Epic #37 / #41 / #42 / #43)
 
-`#41`(consensus_evaluator 노드 구현, 병렬 fan-out)과 `#42`(aggregate_consensus 집계 로직)를 구현하며 나눈 논의, 발견한 문제와 해결 과정을 정리한다. 선행 문서: `docs/Supervisor-Escalation-Signal-Design.md`(`#38`/`#40`), `docs/ADR-Consensus-Judge-Models.md`(`#39`).
+`#41`(consensus_evaluator 노드 구현, 병렬 fan-out), `#42`(aggregate_consensus 집계 로직), `#43`(EvalResult.evaluation에 컨센서스 상세 저장)를 구현하며 나눈 논의, 발견한 문제와 해결 과정을 정리한다. 선행 문서: `docs/Supervisor-Escalation-Signal-Design.md`(`#38`/`#40`), `docs/ADR-Consensus-Judge-Models.md`(`#39`).
 
 ## 1. 배경과 범위
 
@@ -146,8 +146,67 @@ pytest tests/test_evaluation_graph.py -v
 pytest tests/test_evaluation_graph.py -m integration -v
 ```
 
-## 9. 다음 단계 — 그리고 지금 빠져있는 연결고리
+## 9. `#41`/`#42` 완료 시점의 미해결 연결고리
 
-`#42`도 그래프 내부 상태(`consensus_summary`)까지만 채운다. 이걸로 실제 케이스 상태(`REVIEW_REQUIRED` vs `COMPLETED`)를 바꾸거나 Dashboard에 노출하는 건 아직 아무도 안 한다 — `#37` 다이어그램상 "Epic E"가 담당할 몫인데, 이 저장소엔 아직 Epic E 이슈 자체가 없다.
+`#42`까지는 그래프 내부 상태(`consensus_results`/`consensus_summary`)까지만 채웠다. `app/main.py`의 `run_evaluation_pipeline`이 `graph_result`에서 `verification`/`evaluation`/`supervision`/`retry_count`만 꺼내 `result_payload`를 만들었기 때문에, fan-out·집계가 그래프 안에서는 잘 동작해도 `/agents/evaluate/sync` 응답에도 Backend의 `EvalResult`에도 저장되지 않고 그래프 실행이 끝나는 순간 버려졌다. `#43`이 이 연결을 뚫었다(§10).
 
-**`#41`에서 남겼던 연결고리 문제가 그대로 남아있다.** `app/main.py`의 `run_evaluation_pipeline`이 `graph_result`에서 `verification`/`evaluation`/`supervision`/`retry_count`만 꺼내 `result_payload`를 만드는데, `consensus_results`도 `consensus_summary`도 이 목록에 없다 — fan-out·집계가 그래프 안에서는 잘 동작해도, `/agents/evaluate/sync` 응답에도 Backend의 `EvalResult`에도 지금은 저장되지 않고 그래프 실행이 끝나는 순간 버려진다. Epic E(또는 그 전 단계)에서 이 연결(`main.py` → API 응답 → Backend 저장 → Dashboard 표시)을 뚫어야 컨센서스 결과가 실제로 쓰일 수 있다.
+## 10. `#43` — EvalResult.evaluation에 컨센서스 상세 저장
+
+### 10.1 설계
+
+`§9`의 연결고리를 뚫는 작업이다. `app/main.py`의 `run_evaluation_pipeline`에서, `graph_result`(`consensus_results`/`consensus_summary`)를 `eval_result`(`evaluation` JSONB가 될 딕셔너리)에 병합하는 순수 함수 `_attach_consensus_detail`을 추가했다 — `#38`/`#40`/`#42`와 같은 패턴(그래프/파이프라인 로직에서 테스트 가능한 순수 함수를 분리)을 그대로 따랐다.
+
+이슈가 요구하는 필드 이름과 내부 값 사이에 **극성이 반대인 것이 하나 있다**: 내부적으로는 `failDisagreement`(불일치 여부, `True`=불일치)로 계산해왔는데, 이슈가 요구하는 필드명은 `failConditionAgreement`(합의 여부, `True`=합의)다. 그대로 복사하면 의미가 정반대로 저장되므로, `not consensus_summary["failDisagreement"]`로 뒤집어서 옮겼다.
+
+```python
+"consensusDetail": {
+    "models": [r["model"] for r in consensus_results],
+    "scores": [r["score"] for r in consensus_results],
+    "spread": consensus_summary["spread"],
+    "failConditionAgreement": not consensus_summary["failDisagreement"],  # 극성 반전
+    "verdict": consensus_summary["verdict"],
+}
+```
+
+`models`/`scores`를 같은 `consensus_results` 순회에서 한 번에 만들기 때문에, `Send` fan-out의 병렬 실행 순서가 실행마다 달라져도(LangGraph가 그 순서를 보장하지 않음) 인덱스가 서로 어긋나는 문제는 없다 — 두 배열이 항상 같은 소스 리스트에서, 같은 순서로 파생되기 때문이다.
+
+Backend는 이미 `evaluation?: Record<string, unknown>`으로 느슨하게 타입돼 있어서, TS 쪽 변경 없이 새 필드가 그대로 `EvalResult.evaluation` JSONB까지 통과한다.
+
+### 10.2 Dashboard까지 같이 처리하기로 함
+
+이슈 자체는 Dashboard `ResultExplorerCard` 표시를 "선택 사항, 후속 이슈로 분리 가능"으로 명시했지만, 나중에 잊어버릴 수 있다는 이유로 같은 세션에서 같이 처리하고 커밋만 분리하기로 했다.
+
+`apps/dashboard/src/App.tsx`의 `ResultExplorerCard`(정확히 이슈가 언급한 그 이름의 컴포넌트)에:
+
+- `explorer-score` 영역에 `CONSENSUS` 배지 추가(컨센서스가 적용된 케이스만)
+- 기존 Verifier(01)/Evaluator(02)/Supervisor(03) 3단계 `AgentStep` 뒤에, 컨센서스가 적용된 케이스에 한해 4번째 `AgentStep`("Consensus")을 추가 — 모델별 점수를 `metric-chips`로, spread/판정 근거를 `reason`으로, `failConditionAgreement`를 `footer`로 표시
+- `verdict`(`CONVERGED`/`SPREAD_TOO_HIGH`/`FAIL_DISAGREEMENT`)에 따라 배지/카드 색을 pass/warn/fail 톤으로 매핑
+- `.agent-timeline`의 `grid-template-columns`을 `repeat(3, ...)` 고정에서 `repeat(auto-fit, minmax(220px, 1fr))`로 바꿔, 3장/4장 모두 레이아웃이 안 깨지게 함
+
+### 10.3 검증 — 실제로 Dashboard까지 띄워서 확인
+
+`tsc -b`만으로는 "타입이 맞다"만 증명하지, "실제로 이렇게 보인다"는 증명하지 못한다. 그래서:
+
+1. 로컬 Postgres의 실제 `EvalResult` 행 하나를 **임시로** 패치해 `consensusApplied: true`와 `consensusDetail`(3개 모델, spread 0.85, `FAIL_DISAGREEMENT`)을 채워 넣었다.
+2. Backend(`pnpm --filter backend start:dev`)와 Dashboard(`pnpm --filter dashboard dev`)를 로컬로 띄웠다.
+3. `chromium-cli`가 이 환경에 없어서, Playwright(`npx playwright`, 스크래치패드에 임시 설치, 시스템 Google Chrome을 `channel: 'chrome'`로 구동)로 대체해 헤드리스 브라우저를 직접 구동했다.
+4. 실제 화면에서 `CASE 03`에 `CONSENSUS` 배지와 4번째 "Consensus" 카드(모델별 점수 칩, 빨간 톤 = FAIL_DISAGREEMENT, "필수/실패조건 판정: 모델 간 불일치 — 사람 검토 필요" 문구)가 정상적으로 렌더링되는 걸 스크린샷으로 확인했다. 3장짜리 케이스(CASE 01, 02)는 레이아웃이 그대로 유지됐다.
+5. 콘솔에 404 로그가 하나 있었지만, 모든 네트워크 응답을 캡처해 대조해봐도 대응하는 실패 요청이 없었다 — 이번 변경이 새 리소스 URL을 참조하지 않으므로(순수 React/CSS 변경) 무관한 항목으로 판단했다.
+6. **검증 후 원상복구**: 패치했던 `EvalResult.evaluation`을 원래 값으로 정확히 되돌렸다(바이트 단위로 diff 확인). 로컬 dev 서버도 종료했다.
+
+### 10.4 테스트
+
+`apps/agent-engine/tests/test_main.py`(신규, Ollama 불필요):
+
+| 테스트 | 검증하는 가설 |
+|---|---|
+| `test_no_consensus_detail_when_not_applied` | 컨센서스 미적용 시 `consensusApplied=False`, `consensusDetail=None`, 기존 키 보존 |
+| `test_no_consensus_detail_when_consensus_results_is_none` | `consensus_results`가 `None`으로 와도(초기 상태) 예외 없이 처리 |
+| `test_consensus_detail_maps_fields_and_inverts_fail_disagreement_polarity` | `failDisagreement=False` → `failConditionAgreement=True`로 정확히 뒤집힘 |
+| `test_consensus_detail_inverts_polarity_the_other_direction_too` | 대조군 — `failDisagreement=True` → `failConditionAgreement=False`(반대 방향도 확인, 한쪽만 우연히 맞는 부호 실수 방지) |
+
+**결과:** 기본 스위트 38개 통과(0.40초). Dashboard는 `tsc -b` 통과 + 위 §10.3의 실제 브라우저 검증.
+
+## 11. 다음 단계
+
+`#37` 에픽의 `#38`~`#43`이 전부 끝났다. 남은 건 `#37` 다이어그램상 "Epic E"(REVIEW_REQUIRED 라우팅, confidence/spread 임계값 실측 캘리브레이션 등) — 아직 이슈 자체가 없다.
