@@ -360,9 +360,15 @@ export class SdkProtocolRepository {
     }
     const startedAt = new Date();
     return this.prisma.$transaction(async (transaction) => {
-      const started = await transaction.sdkJob.update({
-        where: { id: job.id },
+      const claimed = await transaction.sdkJob.updateMany({
+        where: { id: job.id, leaseId: input.leaseId, status: 'CLAIMED' },
         data: { status: 'RUNNING', startedAt },
+      });
+      if (claimed.count !== 1) {
+        throw new ConflictException('Job lease is invalid or expired');
+      }
+      const started = await transaction.sdkJob.findUniqueOrThrow({
+        where: { id: job.id },
         select: { id: true, status: true, startedAt: true },
       });
       if (job.evalRunCaseId) {
@@ -424,8 +430,8 @@ export class SdkProtocolRepository {
 
     const completedAt = new Date();
     return this.prisma.$transaction(async (transaction) => {
-      const completed = await transaction.sdkJob.update({
-        where: { id: job.id },
+      const claimed = await transaction.sdkJob.updateMany({
+        where: { id: job.id, leaseId: input.leaseId, status: 'RUNNING' },
         data: {
           status: 'COMPLETED',
           idempotencyKey,
@@ -437,6 +443,12 @@ export class SdkProtocolRepository {
           leaseId: null,
           leaseExpiresAt: null,
         },
+      });
+      if (claimed.count !== 1) {
+        throw new ConflictException('Job lease is invalid or expired');
+      }
+      const completed = await transaction.sdkJob.findUniqueOrThrow({
+        where: { id: job.id },
         select: { id: true, status: true, completedAt: true },
       });
 
@@ -494,8 +506,8 @@ export class SdkProtocolRepository {
       input.error.retryable === true && job.attempt < job.maxAttempts;
     const failedAt = new Date();
     return this.prisma.$transaction(async (transaction) => {
-      const failed = await transaction.sdkJob.update({
-        where: { id: job.id },
+      const claimed = await transaction.sdkJob.updateMany({
+        where: { id: job.id, leaseId: input.leaseId, status: job.status },
         data: {
           status: shouldRetry ? 'PENDING' : 'FAILED',
           error: input.error as Prisma.InputJsonValue,
@@ -504,6 +516,12 @@ export class SdkProtocolRepository {
           leaseId: null,
           leaseExpiresAt: null,
         },
+      });
+      if (claimed.count !== 1) {
+        throw new ConflictException('Job lease is invalid or expired');
+      }
+      const failed = await transaction.sdkJob.findUniqueOrThrow({
+        where: { id: job.id },
         select: {
           id: true,
           status: true,
