@@ -1,4 +1,5 @@
 import { ConflictException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import type { PrismaService } from 'prisma/prisma.service';
 import { SdkProtocolRepository } from './sdk-protocol.repository';
 
@@ -23,6 +24,9 @@ describe('SdkProtocolRepository - lease CAS on state transitions', () => {
     const transactionClient = {
       sdkJob: {
         updateMany: jest.fn().mockResolvedValue({ count: updateManyCount }),
+        // CAS가 0행일 때 같은 요청이 먼저 처리됐는지 확인하는 조회(기본은 "없음").
+        findFirst: jest.fn().mockResolvedValue(null),
+        findUnique: jest.fn().mockResolvedValue(null),
         findUniqueOrThrow: jest.fn().mockResolvedValue({
           id: job.id,
           status: job.status,
@@ -103,6 +107,17 @@ describe('SdkProtocolRepository - lease CAS on state transitions', () => {
       expect(transactionClient.evalRunCase.update).toHaveBeenCalledTimes(1);
       expect(transactionClient.evalRun.updateMany).toHaveBeenCalledTimes(1);
     });
+
+    it('같은 start 요청이 먼저 처리됐다면(CAS 0행, 같은 lease로 RUNNING) 에러 없이 같은 결과를 돌려준다', async () => {
+      const { repository, transactionClient } = buildRepository(claimedJob, 0);
+      const already = { id: 'job-1', status: 'RUNNING', startedAt: new Date() };
+      transactionClient.sdkJob.findFirst.mockResolvedValueOnce(already);
+
+      await expect(
+        repository.startJob('sdk-key', 'job-1', { leaseId: 'lease-A' }),
+      ).resolves.toEqual(already);
+      expect(transactionClient.evalRunCase.update).not.toHaveBeenCalled();
+    });
   });
 
   describe('completeJob', () => {
@@ -146,6 +161,60 @@ describe('SdkProtocolRepository - lease CAS on state transitions', () => {
       ).resolves.toEqual(expect.objectContaining({ id: 'job-2' }));
       expect(transactionClient.evalRunCase.update).toHaveBeenCalledTimes(1);
       expect(transactionClient.judgeJob.upsert).toHaveBeenCalledTimes(1);
+    });
+
+    it('같은 멱등키의 완료 요청이 동시에 도착해 CAS가 0행이면 저장된 결과를 돌려주고 부수효과는 실행하지 않는다', async () => {
+      const { repository, transactionClient } = buildRepository(runningJob, 0);
+      const stored = {
+        id: 'job-2',
+        status: 'COMPLETED',
+        completedAt: new Date(),
+      };
+      transactionClient.sdkJob.findUnique.mockResolvedValueOnce(stored);
+
+      await expect(
+        repository.completeJob('sdk-key', 'job-2', 'job-2-attempt-1', {
+          leaseId: 'lease-B',
+          output: 'final answer',
+        }),
+      ).resolves.toEqual(stored);
+      expect(transactionClient.evalRunCase.update).not.toHaveBeenCalled();
+      expect(transactionClient.judgeJob.upsert).not.toHaveBeenCalled();
+    });
+
+    it('CAS가 0행인데 그 멱등키가 다른 작업에 저장돼 있으면 키 오용으로 409를 던진다', async () => {
+      const { repository, transactionClient } = buildRepository(runningJob, 0);
+      transactionClient.sdkJob.findUnique.mockResolvedValueOnce({
+        id: 'other-job',
+        status: 'COMPLETED',
+        completedAt: new Date(),
+      });
+
+      await expect(
+        repository.completeJob('sdk-key', 'job-2', 'shared-key', {
+          leaseId: 'lease-B',
+          output: 'final answer',
+        }),
+      ).rejects.toThrow('Idempotency-Key is already in use');
+      expect(transactionClient.judgeJob.upsert).not.toHaveBeenCalled();
+    });
+
+    it('다른 작업이 같은 멱등키를 먼저 저장해 유니크 제약(P2002)이 위반되면 409로 변환한다', async () => {
+      const { repository, transactionClient } = buildRepository(runningJob, 1);
+      transactionClient.sdkJob.updateMany.mockRejectedValueOnce(
+        new Prisma.PrismaClientKnownRequestError('unique violation', {
+          code: 'P2002',
+          clientVersion: 'test',
+        }),
+      );
+
+      await expect(
+        repository.completeJob('sdk-key', 'job-2', 'shared-key', {
+          leaseId: 'lease-B',
+          output: 'final answer',
+        }),
+      ).rejects.toThrow('Idempotency-Key is already in use');
+      expect(transactionClient.judgeJob.upsert).not.toHaveBeenCalled();
     });
   });
 
