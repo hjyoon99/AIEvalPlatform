@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { Prisma, type JudgeJob } from '@prisma/client';
+import { Prisma, type JudgeJob, type JudgeJobStatus } from '@prisma/client';
 import { PrismaService } from 'prisma/prisma.service';
 import { EvalRunEvents } from './eval-run.events';
 
@@ -171,7 +171,13 @@ export class JudgeWorkerRepository {
       });
       if (expired.length > 0) {
         await transaction.judgeJob.updateMany({
-          where: { id: { in: expired.map((job) => job.id) } },
+          where: {
+            id: { in: expired.map((job) => job.id) },
+            // 스캔 이후 정상 완료되었거나 이미 재할당된 작업을 되돌리지 않도록
+            // 갱신 시점에 만료 조건을 다시 확인한다.
+            status: { in: ['CLAIMED', 'RUNNING'] },
+            leaseExpiresAt: { lt: now },
+          },
           data: {
             status: 'PENDING',
             leaseId: null,
@@ -207,6 +213,7 @@ export class JudgeWorkerRepository {
             retryable: false,
           },
           now,
+          { id: candidate.id, status: 'PENDING' },
         );
         return null;
       }
@@ -232,17 +239,37 @@ export class JudgeWorkerRepository {
   }
 
   /**
+   * 이 슬롯이 아직 lease 소유자일 때만 일치하는 조건을 만든다(펜싱).
+   * lease는 UUID이므로, leaseId가 없는 작업은 어떤 행과도 일치하지 않는 빈 문자열로 비교한다.
+   * @param job - 선점 시점의 Judge 작업(leaseId 포함)
+   * @param statuses - 소유자로 인정할 작업 상태 목록
+   * @returns 상태 변경 UPDATE의 where 조건
+   */
+  private ownedBy(
+    job: JudgeJob,
+    statuses: JudgeJobStatus[],
+  ): Prisma.JudgeJobWhereInput {
+    return {
+      id: job.id,
+      leaseId: job.leaseId ?? '',
+      status: { in: statuses },
+    };
+  }
+
+  /**
    * 선점 작업과 평가 케이스를 실행 상태로 전환한 뒤 평가 결과를 반영한다.
+   * lease를 잃은 슬롯은 어떤 상태도 바꾸지 않고 평가 호출 전에 중단한다.
    * @param job - 처리할 선점된 Judge 작업
    * @returns 처리와 상태 반영이 끝나면 이행되는 Promise
    */
   private async process(job: JudgeJob) {
     const startedAt = new Date();
     const runCase = await this.prisma.$transaction(async (transaction) => {
-      await transaction.judgeJob.update({
-        where: { id: job.id },
+      const started = await transaction.judgeJob.updateMany({
+        where: this.ownedBy(job, ['CLAIMED']),
         data: { status: 'RUNNING', startedAt },
       });
+      if (started.count !== 1) return null;
       const selectedCase = await transaction.evalRunCase.update({
         where: { id: job.evalRunCaseId },
         data: { status: 'JUDGING' },
@@ -254,15 +281,24 @@ export class JudgeWorkerRepository {
       });
       return selectedCase;
     });
+    if (!runCase) {
+      this.logger.warn(`Judge job ${job.id} lost its lease before start.`);
+      return;
+    }
 
     try {
       const result = await this.evaluate(runCase);
-      await this.complete(
+      const applied = await this.complete(
         job,
         runCase,
         result,
         Date.now() - startedAt.getTime(),
       );
+      if (!applied) {
+        this.logger.warn(
+          `Judge job ${job.id} lost its lease; discarded the stale result.`,
+        );
+      }
     } catch (error) {
       await this.fail(job, this.normalizeError(error));
     }
@@ -363,7 +399,7 @@ export class JudgeWorkerRepository {
    * @param runCase - 평가 결과를 연결할 실행 케이스
    * @param result - Agent Engine이 반환한 평가 결과
    * @param durationMs - Judge 처리에 걸린 밀리초
-   * @returns 트랜잭션 반영이 끝나면 이행되는 Promise
+   * @returns 반영했으면 true, lease를 이미 잃어 결과를 버렸으면 false
    */
   private async complete(
     job: JudgeJob,
@@ -379,7 +415,21 @@ export class JudgeWorkerRepository {
     const caseStatus =
       result.verdict === 'RETRY' ? 'REVIEW_REQUIRED' : 'COMPLETED';
 
-    await this.prisma.$transaction(async (transaction) => {
+    const applied = await this.prisma.$transaction(async (transaction) => {
+      // 소유권 확인과 완료 전환을 UPDATE 한 문장으로 처리한다. 이 UPDATE가 행 잠금을
+      // 잡고 있는 동안 다른 슬롯의 회수·재할당은 대기하므로, 아래 쓰기는 소유자일 때만 실행된다.
+      const owned = await transaction.judgeJob.updateMany({
+        where: this.ownedBy(job, ['CLAIMED', 'RUNNING']),
+        data: {
+          status: 'COMPLETED',
+          completedAt,
+          leaseId: null,
+          leaseExpiresAt: null,
+          error: Prisma.DbNull,
+        },
+      });
+      if (owned.count !== 1) return false;
+
       await transaction.evalResult.upsert({
         where: { evalRunCaseId: runCase.id },
         update: {
@@ -433,89 +483,92 @@ export class JudgeWorkerRepository {
         where: { id: runCase.id },
         data: { status: caseStatus, completedAt },
       });
-      await transaction.judgeJob.update({
-        where: { id: job.id },
-        data: {
-          status: 'COMPLETED',
-          completedAt,
-          leaseId: null,
-          leaseExpiresAt: null,
-          error: Prisma.DbNull,
-        },
-      });
       await this.refreshRunSummary(transaction, runCase.evalRunId, completedAt);
+      return true;
     });
-    this.events.emitProgress(runCase.evalRunId);
+    if (applied) this.events.emitProgress(runCase.evalRunId);
+    return applied;
   }
 
   /**
    * 실패의 재시도 가능성과 시도 횟수에 따라 재큐잉하거나 최종 실패 처리한다.
+   * lease를 이미 잃은 슬롯의 실패 보고는 새 소유자의 작업·케이스를 건드리지 않고 버린다.
    * @param job - 실패한 Judge 작업
    * @param error - 재시도 정보가 포함된 표준 오류
    * @returns 실패 상태 반영이 끝나면 이행되는 Promise
    */
   private async fail(job: JudgeJob, error: JudgeExecutionError) {
     const failedAt = new Date();
-    const finalizedEvalRunId = await this.prisma.$transaction(
-      async (transaction) => {
-        const current = await transaction.judgeJob.findUniqueOrThrow({
-          where: { id: job.id },
-        });
-        const shouldRetry =
-          error.retryable && current.attempt < current.maxAttempts;
-        if (shouldRetry) {
-          const backoffMs = Math.min(
-            1_000 * 2 ** Math.max(current.attempt - 1, 0),
-            30_000,
-          );
-          await transaction.judgeJob.update({
-            where: { id: job.id },
-            data: {
-              status: 'PENDING',
-              availableAt: new Date(failedAt.getTime() + backoffMs),
-              leaseId: null,
-              leaseExpiresAt: null,
-              startedAt: null,
-              error: error as unknown as Prisma.InputJsonValue,
-            },
-          });
-          await transaction.evalRunCase.update({
-            where: { id: job.evalRunCaseId },
-            data: { status: 'WAITING_FOR_JUDGE' },
-          });
-          return null;
-        }
+    const owner = this.ownedBy(job, ['CLAIMED', 'RUNNING']);
+    const outcome = await this.prisma.$transaction(async (transaction) => {
+      const current = await transaction.judgeJob.findFirst({ where: owner });
+      if (!current) return null;
 
-        return this.finalizeFailure(transaction, current, error, failedAt);
-      },
-    );
-    if (finalizedEvalRunId) this.events.emitProgress(finalizedEvalRunId);
+      const shouldRetry =
+        error.retryable && current.attempt < current.maxAttempts;
+      if (shouldRetry) {
+        const backoffMs = Math.min(
+          1_000 * 2 ** Math.max(current.attempt - 1, 0),
+          30_000,
+        );
+        const requeued = await transaction.judgeJob.updateMany({
+          where: owner,
+          data: {
+            status: 'PENDING',
+            availableAt: new Date(failedAt.getTime() + backoffMs),
+            leaseId: null,
+            leaseExpiresAt: null,
+            startedAt: null,
+            error: error as unknown as Prisma.InputJsonValue,
+          },
+        });
+        if (requeued.count !== 1) return null;
+        await transaction.evalRunCase.update({
+          where: { id: job.evalRunCaseId },
+          data: { status: 'WAITING_FOR_JUDGE' },
+        });
+        return { finalizedEvalRunId: null };
+      }
+
+      const finalizedEvalRunId = await this.finalizeFailure(
+        transaction,
+        current,
+        error,
+        failedAt,
+        owner,
+      );
+      return finalizedEvalRunId ? { finalizedEvalRunId } : null;
+    });
+    if (!outcome) {
+      this.logger.warn(
+        `Judge job ${job.id} lost its lease; discarded the stale failure report.`,
+      );
+      return;
+    }
+    if (outcome.finalizedEvalRunId) {
+      this.events.emitProgress(outcome.finalizedEvalRunId);
+    }
   }
 
   /**
    * 재시도할 수 없는 작업과 케이스를 실패 상태로 확정한다.
+   * 작업 전환을 먼저 조건부로 수행해, 소유자가 아니면 케이스와 실행 요약을 건드리지 않는다.
    * @param transaction - 상태를 원자적으로 갱신할 Prisma 트랜잭션
    * @param job - 최종 실패 처리할 Judge 작업
    * @param error - 저장할 표준 오류
    * @param failedAt - 실패가 확정된 시각
-   * @returns 실패 및 실행 요약 반영이 끝나면 이행되는 Promise
+   * @param owner - 이 실패를 확정할 자격을 판별하는 조건(lease 소유자 또는 PENDING 후보)
+   * @returns 확정된 평가 실행 식별자, 소유자가 아니어서 반영하지 못했으면 null
    */
   private async finalizeFailure(
     transaction: Prisma.TransactionClient,
     job: JudgeJob,
     error: JudgeExecutionError,
     failedAt: Date,
+    owner: Prisma.JudgeJobWhereInput,
   ) {
-    const runCase = await transaction.evalRunCase.update({
-      where: { id: job.evalRunCaseId },
-      data: {
-        status: 'JUDGE_FAILED',
-        completedAt: failedAt,
-      },
-      select: { evalRunId: true },
-    });
-    await transaction.judgeJob.update({
-      where: { id: job.id },
+    const failed = await transaction.judgeJob.updateMany({
+      where: owner,
       data: {
         status: 'FAILED',
         error: error as unknown as Prisma.InputJsonValue,
@@ -523,6 +576,16 @@ export class JudgeWorkerRepository {
         leaseId: null,
         leaseExpiresAt: null,
       },
+    });
+    if (failed.count !== 1) return null;
+
+    const runCase = await transaction.evalRunCase.update({
+      where: { id: job.evalRunCaseId },
+      data: {
+        status: 'JUDGE_FAILED',
+        completedAt: failedAt,
+      },
+      select: { evalRunId: true },
     });
     await this.refreshRunSummary(transaction, runCase.evalRunId, failedAt);
     return runCase.evalRunId;

@@ -1,0 +1,66 @@
+{
+  "generatedAt": "2026-10-12T07:37:36.643Z",
+  "records": [
+    {
+      "scenario": "J-1a",
+      "description": "작업 1개 × 슬롯 8개 동시 claim",
+      "rounds": 50,
+      "slots": 8,
+      "claimAttempts": 400,
+      "successfulClaims": 50,
+      "duplicateClaims": 0
+    },
+    {
+      "scenario": "J-1b",
+      "description": "작업 20개 × 슬롯 4개가 큐를 비울 때까지 claim",
+      "rounds": 10,
+      "slots": 4,
+      "jobsPerRound": 20,
+      "totalClaims": 200,
+      "duplicates": 0,
+      "missing": 0,
+      "lostRaces": 355
+    },
+    {
+      "scenario": "J-3",
+      "description": "소유권을 잃은 슬롯의 늦은 complete()",
+      "outcome": "accepted",
+      "jobStatus": "COMPLETED",
+      "newHolderLeaseSurvived": false,
+      "evalResultFromStaleSlot": "A-stale",
+      "caseStatus": "COMPLETED"
+    },
+    {
+      "scenario": "J-4",
+      "description": "성공 이후 도착한 늦은 fail(retryable=false)",
+      "jobStatus": "FAILED",
+      "caseStatus": "JUDGE_FAILED",
+      "evalResultExists": true,
+      "runStatus": "FAILED"
+    },
+    {
+      "scenario": "J-5",
+      "description": "새 소유자 처리 중 도착한 늦은 fail(retryable=true)",
+      "jobStatus": "PENDING",
+      "newHolderLeaseSurvived": false,
+      "caseStatus": "WAITING_FOR_JUDGE"
+    },
+    {
+      "scenario": "J-6",
+      "description": "만료 스캔 직후 정상 완료된 작업을 다른 슬롯의 갱신이 되돌리는 인터리빙",
+      "reclaimedAfterCompletion": true,
+      "jobStatus": "CLAIMED",
+      "jobAttempt": 2,
+      "caseStatus": "COMPLETED",
+      "evalResults": 1
+    },
+    {
+      "scenario": "J-7",
+      "description": "소유권을 잃은 슬롯의 process() 시작",
+      "evaluateCalls": 1,
+      "jobStatus": "PENDING",
+      "newHolderLeaseSurvived": false,
+      "caseStatus": "WAITING_FOR_JUDGE"
+    }
+  ]
+}

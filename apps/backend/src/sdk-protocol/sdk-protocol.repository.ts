@@ -360,9 +360,21 @@ export class SdkProtocolRepository {
     }
     const startedAt = new Date();
     return this.prisma.$transaction(async (transaction) => {
-      const started = await transaction.sdkJob.update({
-        where: { id: job.id },
+      const claimed = await transaction.sdkJob.updateMany({
+        where: { id: job.id, leaseId: input.leaseId, status: 'CLAIMED' },
         data: { status: 'RUNNING', startedAt },
+      });
+      if (claimed.count !== 1) {
+        // 같은 start 요청이 먼저 처리된 경우는 멱등하게 같은 결과를 돌려준다.
+        const current = await transaction.sdkJob.findFirst({
+          where: { id: job.id, leaseId: input.leaseId, status: 'RUNNING' },
+          select: { id: true, status: true, startedAt: true },
+        });
+        if (current) return current;
+        throw new ConflictException('Job lease is invalid or expired');
+      }
+      const started = await transaction.sdkJob.findUniqueOrThrow({
+        where: { id: job.id },
         select: { id: true, status: true, startedAt: true },
       });
       if (job.evalRunCaseId) {
@@ -424,19 +436,48 @@ export class SdkProtocolRepository {
 
     const completedAt = new Date();
     return this.prisma.$transaction(async (transaction) => {
-      const completed = await transaction.sdkJob.update({
+      let claimed: { count: number };
+      try {
+        claimed = await transaction.sdkJob.updateMany({
+          where: { id: job.id, leaseId: input.leaseId, status: 'RUNNING' },
+          data: {
+            status: 'COMPLETED',
+            idempotencyKey,
+            output: {
+              text: input.output,
+              metadata: input.metadata ?? {},
+            } as Prisma.InputJsonValue,
+            completedAt,
+            leaseId: null,
+            leaseExpiresAt: null,
+          },
+        });
+      } catch (error) {
+        // 다른 작업이 같은 키를 먼저 저장한 경우(유니크 제약)는 키 오용으로 처리한다.
+        if (
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === 'P2002'
+        ) {
+          throw new ConflictException('Idempotency-Key is already in use');
+        }
+        throw error;
+      }
+      if (claimed.count !== 1) {
+        // 동시에 도착한 같은 요청이 먼저 완료했다면 저장된 결과를 그대로 돌려준다(멱등).
+        const replay = await transaction.sdkJob.findUnique({
+          where: { idempotencyKey },
+          select: { id: true, status: true, completedAt: true },
+        });
+        if (replay) {
+          if (replay.id !== job.id) {
+            throw new ConflictException('Idempotency-Key is already in use');
+          }
+          return replay;
+        }
+        throw new ConflictException('Job lease is invalid or expired');
+      }
+      const completed = await transaction.sdkJob.findUniqueOrThrow({
         where: { id: job.id },
-        data: {
-          status: 'COMPLETED',
-          idempotencyKey,
-          output: {
-            text: input.output,
-            metadata: input.metadata ?? {},
-          } as Prisma.InputJsonValue,
-          completedAt,
-          leaseId: null,
-          leaseExpiresAt: null,
-        },
         select: { id: true, status: true, completedAt: true },
       });
 
@@ -494,8 +535,8 @@ export class SdkProtocolRepository {
       input.error.retryable === true && job.attempt < job.maxAttempts;
     const failedAt = new Date();
     return this.prisma.$transaction(async (transaction) => {
-      const failed = await transaction.sdkJob.update({
-        where: { id: job.id },
+      const claimed = await transaction.sdkJob.updateMany({
+        where: { id: job.id, leaseId: input.leaseId, status: job.status },
         data: {
           status: shouldRetry ? 'PENDING' : 'FAILED',
           error: input.error as Prisma.InputJsonValue,
@@ -504,6 +545,12 @@ export class SdkProtocolRepository {
           leaseId: null,
           leaseExpiresAt: null,
         },
+      });
+      if (claimed.count !== 1) {
+        throw new ConflictException('Job lease is invalid or expired');
+      }
+      const failed = await transaction.sdkJob.findUniqueOrThrow({
+        where: { id: job.id },
         select: {
           id: true,
           status: true,
