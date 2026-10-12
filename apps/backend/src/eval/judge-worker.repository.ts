@@ -595,6 +595,13 @@ export class JudgeWorkerRepository {
    * 케이스 종결 상태를 집계해 상위 평가 실행의 상태와 카운터를 갱신한다.
    * @param transaction - 집계와 갱신에 사용할 Prisma 트랜잭션
    * @param evalRunId - 갱신할 평가 실행 식별자
+   * 같은 Run의 요약 갱신은 EvalRun 행 잠금으로 직렬화한다. 잠금 없이 집계하면 READ COMMITTED에서
+   * 다른 트랜잭션의 미커밋 종결이 보이지 않아, 동시에 끝난 케이스마다 "내 케이스만 종결"로 계산한
+   * stale 값이 마지막에 덮어써진다. 잠금을 기다린 트랜잭션은 앞선 트랜잭션의 커밋을 본 뒤 집계한다.
+   * `FOR UPDATE`가 아니라 `FOR NO KEY UPDATE`를 쓰는 이유: EvalResult INSERT의 외래키 검사가 EvalRun 행에
+   * `FOR KEY SHARE`를 걸어 두므로, `FOR UPDATE`는 동시에 완료된 트랜잭션끼리 서로를 기다리는 교착이 된다.
+   * @param transaction - 집계와 갱신에 사용할 Prisma 트랜잭션
+   * @param evalRunId - 갱신할 평가 실행 식별자
    * @param now - 완료 시각으로 기록할 기준 시각
    * @returns 실행 요약 갱신이 끝나면 이행되는 Promise
    */
@@ -603,6 +610,7 @@ export class JudgeWorkerRepository {
     evalRunId: string,
     now: Date,
   ) {
+    await transaction.$queryRaw`SELECT id FROM "EvalRun" WHERE id = ${evalRunId} FOR NO KEY UPDATE`;
     const cases = await transaction.evalRunCase.findMany({
       where: { evalRunId },
       select: { status: true },

@@ -50,6 +50,8 @@ describe('SdkProtocolRepository - lease CAS on state transitions', () => {
       judgeJob: {
         upsert: jest.fn().mockResolvedValue({}),
       },
+      // 실행 요약 갱신 전 EvalRun 행 잠금(SELECT ... FOR NO KEY UPDATE)
+      $queryRaw: jest.fn().mockResolvedValue([]),
     };
 
     const prisma = {

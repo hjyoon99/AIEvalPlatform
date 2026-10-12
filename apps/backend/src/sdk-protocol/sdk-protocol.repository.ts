@@ -660,6 +660,8 @@ export class SdkProtocolRepository {
 
   /**
    * 실행 실패 이후 평가 케이스 집계를 다시 계산해 상위 실행 상태를 갱신한다.
+   * 같은 Run의 요약 갱신은 EvalRun 행 잠금으로 직렬화한다. 잠금 없이 집계하면 READ COMMITTED에서
+   * 다른 트랜잭션의 미커밋 실패가 보이지 않아, 동시에 실패한 케이스마다 stale 값이 덮어써진다.
    * @param transaction - 집계와 갱신에 사용할 Prisma 트랜잭션
    * @param evalRunId - 갱신할 평가 실행 식별자
    * @param completedAt - 완료 시각으로 사용할 기준 시각
@@ -670,6 +672,7 @@ export class SdkProtocolRepository {
     evalRunId: string,
     completedAt: Date,
   ) {
+    await transaction.$queryRaw`SELECT id FROM "EvalRun" WHERE id = ${evalRunId} FOR NO KEY UPDATE`;
     const [totalCases, failedCases] = await Promise.all([
       transaction.evalRunCase.count({ where: { evalRunId } }),
       transaction.evalRunCase.count({
