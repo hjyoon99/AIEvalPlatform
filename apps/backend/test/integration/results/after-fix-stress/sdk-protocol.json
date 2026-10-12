@@ -1,0 +1,93 @@
+{
+  "generatedAt": "2026-10-12T07:07:36.120Z",
+  "records": [
+    {
+      "scenario": "1-a",
+      "description": "작업 1개 × 워커 8개 동시 claim",
+      "rounds": 300,
+      "workers": 8,
+      "claimAttempts": 2400,
+      "successfulClaims": 300,
+      "duplicateClaims": 0
+    },
+    {
+      "scenario": "1-b",
+      "description": "작업 20개 × 워커 8개가 큐를 비울 때까지 claim",
+      "rounds": 60,
+      "workers": 8,
+      "jobsPerRound": 20,
+      "totalClaims": 1200,
+      "duplicates": 0,
+      "missing": 0,
+      "lostRaces": 3245
+    },
+    {
+      "scenario": "2-a",
+      "description": "lease 만료 후 재할당",
+      "reclaimedBeforeExpiry": false,
+      "reclaimedAfterExpiry": true,
+      "attemptAfterReclaim": 2,
+      "leaseIdChanged": true
+    },
+    {
+      "scenario": "3-a",
+      "description": "회수 후 도착한 이전 lease의 완료 요청",
+      "staleRequestRejected": true,
+      "finalOutputFromNewHolder": true
+    },
+    {
+      "scenario": "3-b",
+      "description": "검사와 쓰기 사이에 lease가 회수·재할당되는 인터리빙",
+      "outcome": "ConflictException",
+      "finalStatus": "CLAIMED",
+      "finalOutput": null,
+      "newHolderLeaseSurvived": true
+    },
+    {
+      "scenario": "3-c",
+      "description": "검사와 쓰기 사이에 lease가 회수·재할당되는 인터리빙 (start)",
+      "outcome": "ConflictException",
+      "finalStatus": "CLAIMED",
+      "attempt": 2
+    },
+    {
+      "scenario": "3-d",
+      "description": "검사와 쓰기 사이에 lease가 회수·재할당되는 인터리빙 (fail)",
+      "outcome": "ConflictException",
+      "finalStatus": "CLAIMED",
+      "newHolderLeaseSurvived": true,
+      "caseStatus": "WAITING_FOR_EXECUTION"
+    },
+    {
+      "scenario": "4-a",
+      "description": "동일 키 완료 요청 8개 동시 (자연 경쟁)",
+      "rounds": 300,
+      "parallel": 8,
+      "fulfilled": 2400,
+      "rejections": {},
+      "sdkJobUpdateExecutionsPerRound": {
+        "1": 300
+      }
+    },
+    {
+      "scenario": "4-b",
+      "description": "동일 키 완료 요청 8개, 조회 통과 후 동시에 쓰기 (인터리빙 강제)",
+      "parallel": 8,
+      "fulfilled": 8,
+      "rejected": [],
+      "sdkJobUpdateExecutions": 1,
+      "evalRunCaseUpdateExecutions": 1,
+      "judgeJobUpsertExecutions": 1,
+      "judgeJobRows": 1
+    },
+    {
+      "scenario": "4-d",
+      "description": "첫 완료 이후 순차 재전송 5회",
+      "replays": 5,
+      "sdkJobUpdateExecutions": 0,
+      "evalRunCaseUpdateExecutions": 0,
+      "judgeJobUpsertExecutions": 0,
+      "judgeJobRows": 1
+    }
+  ]
+}
