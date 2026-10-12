@@ -8,11 +8,11 @@
 
 작업을 잡았던 워커가 느려져 **소유권(lease)을 잃은 뒤에도 쓰기를 해서 새 소유자의 작업을 덮어쓰던 문제**를,
 모든 상태 변경 UPDATE에 **"내 leaseId가 아직 유효할 때만"** 조건을 걸어 고쳤다.
-실제 PostgreSQL 통합 테스트 23개 중 **10개가 실패하던 것이 23개 전부 통과**한다.
+실제 PostgreSQL 통합 테스트 24개 중 **11개가 실패하던 것이 24개 전부 통과**한다.
 
 | | 수정 전 | 수정 후 |
 |---|---|---|
-| 통합 테스트 | 13 통과 / **10 실패** | **23 통과** (기본 3회 반복 + 300라운드 스트레스 모두 통과) |
+| 통합 테스트 | 13 통과 / **11 실패** | **24 통과** (기본 3회 반복 + 300라운드 스트레스 모두 통과) |
 | 소유권을 잃은 워커의 뒤늦은 쓰기 | 수락되어 새 소유자 상태를 덮어씀 | 거부(SDK는 409, Judge는 조용히 폐기) |
 | 같은 완료 요청이 동시에 8개 도착 | 완료 쓰기가 **8회** 실행 | **1회** 실행, 나머지는 저장된 결과를 반환 |
 
@@ -51,11 +51,12 @@ mock이 아니라 **실제 PostgreSQL**(행 잠금과 조건부 UPDATE에 의존
 - 테스트: `apps/backend/test/integration/sdk-protocol.integration-spec.ts`, `judge-lease.integration-spec.ts`
 - 도우미: `helpers.ts` — 별도 테스트 DB(`*_test`가 아니면 실행 거부), 쓰기 횟수 계측(`$extends`), 인터리빙 강제(barrier)
 - **인터리빙 강제**: "검사를 통과한 바로 직후에 다른 워커가 lease를 회수·재할당"하는 최악의 순서를 코드로 만들어
-  우연에 의존하지 않고 결함을 재현한다 (3-b/3-c/3-d, J-6, 4-b).
+  우연에 의존하지 않고 결함을 재현한다 (3-b/3-c/3-d, J-6, 4-b, 4-e).
 - lease 만료는 DB의 만료 시각을 과거로 바꿔 시뮬레이션한다(SDK 최소 lease가 60초라서).
 
 처음 19개 테스트에서 5개 실패가 나왔고, 같은 결함을 더 세밀하게 겨냥하는 테스트(3-c, 3-d, J-6, J-7)와 4-a의
-엄격한 단언을 추가해 **수정 전 기준선을 23개 중 10개 실패**로 확정한 뒤 코드를 고쳤다.
+엄격한 단언을 추가해 수정 전 기준선을 확정한 뒤 코드를 고쳤다. 이후 `startJob`의 동시 중복 요청을 검증하는
+4-e를 더해 **최종 기준선은 24개 중 11개 실패**다.
 
 ---
 
@@ -65,12 +66,12 @@ mock이 아니라 **실제 PostgreSQL**(행 잠금과 조건부 UPDATE에 의존
 
 | 위치 | 내용 |
 |---|---|
-| `apps/backend/test/integration/results/before-fix/` | **수정 전** (기본 반복 50, 23개 테스트 기준) |
+| `apps/backend/test/integration/results/before-fix/` | **수정 전** (기본 반복 50, 24개 테스트 기준) |
 | `apps/backend/test/integration/results/after-fix/` | 수정 후 (같은 조건) |
 | `apps/backend/test/integration/results/after-fix-stress/` | 수정 후 스트레스 (반복 300) |
 | `apps/backend/test/integration/results/*.json` | 가장 최근 실행 결과 |
 
-수정 전 실패 10건:
+수정 전 실패 11건:
 
 | 테스트 | 검증하려는 불변식 | 수정 전 실제 결과 |
 |---|---|---|
@@ -79,6 +80,7 @@ mock이 아니라 **실제 PostgreSQL**(행 잠금과 조건부 UPDATE에 의존
 | SDK 3-d | 〃 `fail`이 새 소유자 작업을 못 바꿈 | **수락**, 작업 FAILED·케이스 EXECUTION_FAILED, lease 삭제 |
 | SDK 4-a | 동일 완료 요청 8개 동시 → 쓰기 1회 (50라운드) | 라운드마다 **8회** (`{"8": 50}`) |
 | SDK 4-b | 조회 통과 후 동시 쓰기 강제 → 쓰기 1회 | sdkJob 8 · case 8 · JudgeJob upsert 8회 |
+| SDK 4-e | 같은 `start` 요청 8개 동시(사전 검사 통과 후 쓰기 경쟁 강제) → 에러 없이 쓰기 1회 | 라운드마다 start 쓰기 **8회** (sdkJob 8 · case 8, 10라운드) |
 | Judge J-3 | 소유권 잃은 슬롯의 `complete()`는 무효 | 수락, 결과 행이 stale 슬롯 것, lease 삭제 |
 | Judge J-4 | 성공 후 늦은 `fail()`이 성공을 못 덮음 | 케이스 JUDGE_FAILED, **Run FAILED** |
 | Judge J-5 | 새 소유자 처리 중 늦은 `fail()` 무효 | 작업 PENDING 재큐잉, lease 삭제 |
@@ -193,11 +195,15 @@ if (claimed.count !== 1) {
 | 3-d 〃 `fail` | 결과 | accepted, 작업 FAILED·케이스 EXECUTION_FAILED | **ConflictException**, 작업 CLAIMED·케이스 WAITING_FOR_EXECUTION |
 | 4-a 동일 완료 8개 동시 × 50라운드 | 라운드별 완료 쓰기 횟수 | `{"8": 50}` | **`{"1": 50}`** |
 | 4-b 조회 통과 후 동시 쓰기 강제 | 쓰기(sdkJob / case / upsert) | 8 / 8 / 8 | **1 / 1 / 1** (JudgeJob 행 1개) |
+| 4-e 같은 `start` 요청 8개 동시 × 10라운드 | 라운드별 start 쓰기(sdkJob / case) | 8 / 8 | **1 / 1** (요청 80개 모두 에러 없이 응답) |
 | J-3 소유권 잃은 `complete()` | 작업 / 결과 행 / 케이스 | COMPLETED / stale 슬롯 것 / COMPLETED | **RUNNING 유지 / 없음 / JUDGING 유지** |
 | J-4 성공 후 늦은 `fail()` | 작업 / 케이스 / Run | FAILED / JUDGE_FAILED / **FAILED** | **COMPLETED / COMPLETED / COMPLETED** |
 | J-5 새 소유자 처리 중 늦은 `fail()` | 작업 / 새 lease | PENDING / 삭제됨 | **RUNNING / 유지** |
 | J-6 만료 스캔 직후 정상 완료 | 재claim 여부 / attempt | **재claim됨** / 2 | **안 됨** / 1 |
 | J-7 소유권 잃은 슬롯의 `process()` | 평가 API 호출 | 1회 | **0회** |
+
+참고: CAS만 적용된 `a52c8fe` 구현에서 4-e를 돌리면 요청 80개 중 70개가 `ConflictException`으로 끝난다(라운드마다 승자 1개만 성공).
+쓰기는 1회로 막히지만 재전송한 워커가 성공한 시작을 실패로 오해할 수 있어, 이번 보완은 중복 요청이 에러 없이 같은 결과를 받게 한다.
 
 ### 6.2 그대로 유지된 것 (회귀 없음)
 
@@ -215,8 +221,8 @@ claim 경쟁에서 진 횟수(`lostRaces`)는 수정 전후가 비슷하다(SDK 
 
 ### 6.3 안정성
 
-- 기본 설정 3회 반복 실행: 매번 23/23 통과 (flaky 없음)
-- 스트레스(`IT_ITERATIONS=300`): 23/23 통과 — 동시 claim 2,400회(SDK)·2,400회(Judge) 중복 0건, 동일 완료 8개 동시 × 300라운드 쓰기 모두 정확히 1회
+- 기본 설정 3회 반복 실행: 매번 24/24 통과 (flaky 없음)
+- 스트레스(`IT_ITERATIONS=300`): 24/24 통과 — 동시 claim 2,400회(SDK)·2,400회(Judge) 중복 0건, 동일 완료 8개 동시 × 300라운드 쓰기 모두 정확히 1회
 - 단위 테스트 12개 통과 (`a52c8fe`의 CAS 테스트 7개 + 멱등 보완 테스트 4개 + 기존 1개)
 - 타입 검사(`tsc --noEmit`)·ESLint: 변경한 소스 파일에 오류 없음 (`project.service.ts`의 기존 린트 오류 1건은 이번 범위 밖)
 
@@ -243,14 +249,14 @@ cd apps/backend
 DATABASE_URL='postgresql://postgres:postgres@localhost:5433/eval_platform_test?schema=public' \
   ./node_modules/.bin/prisma migrate deploy
 
-pnpm test:integration                       # 수정 후 23/23
+pnpm test:integration                       # 수정 후 24/24
 IT_ITERATIONS=300 pnpm test:integration     # 스트레스
 ```
 
-**수정 전 상태 재현**: 수정한 소스 파일만 수정 전 커밋(`70851b4`)으로 되돌려 같은 테스트를 돌리면 10개가 실패한다.
+**수정 전 상태 재현**: 수정한 소스 파일만 수정 전 커밋(`70851b4`)으로 되돌려 같은 테스트를 돌리면 11개가 실패한다.
 
 ```bash
 git checkout 70851b4 -- apps/backend/src/eval apps/backend/src/sdk-protocol/sdk-protocol.repository.ts
-cd apps/backend && pnpm test:integration    # 23개 중 10 실패
+cd apps/backend && pnpm test:integration    # 24개 중 11 실패
 cd ../.. && git checkout HEAD -- apps/backend/src/eval apps/backend/src/sdk-protocol/sdk-protocol.repository.ts
 ```

@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-10-12T07:06:09.845Z",
+  "generatedAt": "2026-10-12T07:37:41.186Z",
   "records": [
     {
       "scenario": "1-a",
@@ -19,7 +19,7 @@
       "totalClaims": 200,
       "duplicates": 0,
       "missing": 0,
-      "lostRaces": 533
+      "lostRaces": 544
     },
     {
       "scenario": "2-a",
@@ -88,6 +88,20 @@
       "evalRunCaseUpdateExecutions": 0,
       "judgeJobUpsertExecutions": 0,
       "judgeJobRows": 1
+    },
+    {
+      "scenario": "4-e",
+      "description": "같은 start 요청 8개 동시 (사전 검사 통과 후 쓰기 경쟁 강제)",
+      "rounds": 10,
+      "parallel": 8,
+      "fulfilled": 80,
+      "rejections": {},
+      "sdkJobUpdateExecutionsPerRound": {
+        "1": 10
+      },
+      "evalRunCaseUpdateExecutionsPerRound": {
+        "1": 10
+      }
     }
   ]
 }

@@ -591,3 +591,80 @@ describe('시나리오 4. 동일 완료 요청이 동시에 들어왔을 때', (
     expect(judgeJobs).toBe(1);
   });
 });
+
+describe('시나리오 4 (start). 같은 start 요청이 동시에 들어왔을 때', () => {
+  it('4-e. 모든 요청이 lease 사전 검사를 통과한 뒤 동시에 쓰기를 해도 에러 없이 같은 결과를 받고 시작 처리는 한 번만 실행된다', async () => {
+    const parallel = 8;
+    const rounds = Math.max(1, Math.floor(iterations() / 5));
+    const { client, counters } = instrument(prisma);
+    const instrumented = new SdkProtocolRepository(client);
+    const original = (instrumented as any).requireLeasedJob.bind(instrumented);
+    const leaseCheck = jest.spyOn(instrumented as any, 'requireLeasedJob');
+    const writesHistogram: Record<string, number> = {};
+    const caseWritesHistogram: Record<string, number> = {};
+    const rejections: Record<string, number> = {};
+    let fulfilled = 0;
+
+    for (let round = 0; round < rounds; round++) {
+      const linked = await createLinkedSdkJob(prisma, fixture.applicationId);
+      const claimed = await repo.claimJob(fixture.sdkKey);
+      // 8개 요청이 모두 CLAIMED 상태로 사전 검사를 통과한 뒤에 쓰기 경쟁을 하도록 강제한다.
+      const barrier = createBarrier(parallel);
+      leaseCheck.mockImplementation(async (...args: unknown[]) => {
+        const job = await original(...args);
+        await barrier.arrive();
+        return job;
+      });
+      const before = snapshot(counters);
+
+      const settled = await Promise.allSettled(
+        Array.from({ length: parallel }, () =>
+          instrumented.startJob(fixture.sdkKey, linked.jobId, {
+            leaseId: leaseOf(claimed),
+          }),
+        ),
+      );
+      const delta = diff(snapshot(counters), before);
+
+      for (const item of settled) {
+        if (item.status === 'fulfilled') {
+          fulfilled += 1;
+          expect(item.value.status).toBe('RUNNING');
+        } else {
+          const name = (item.reason as Error).constructor.name;
+          rejections[name] = (rejections[name] ?? 0) + 1;
+        }
+      }
+      writesHistogram[delta.sdkJobUpdate] =
+        (writesHistogram[delta.sdkJobUpdate] ?? 0) + 1;
+      caseWritesHistogram[delta.evalRunCaseUpdate] =
+        (caseWritesHistogram[delta.evalRunCaseUpdate] ?? 0) + 1;
+
+      const row = await prisma.sdkJob.findUniqueOrThrow({
+        where: { id: linked.jobId },
+      });
+      const runCase = await prisma.evalRunCase.findUniqueOrThrow({
+        where: { id: linked.evalRunCaseId },
+      });
+      expect(row.status).toBe('RUNNING');
+      expect(row.attempt).toBe(1);
+      expect(row.leaseId).toBe(leaseOf(claimed));
+      expect(runCase.status).toBe('EXECUTING');
+    }
+
+    record({
+      scenario: '4-e',
+      description:
+        '같은 start 요청 8개 동시 (사전 검사 통과 후 쓰기 경쟁 강제)',
+      rounds,
+      parallel,
+      fulfilled,
+      rejections,
+      sdkJobUpdateExecutionsPerRound: writesHistogram,
+      evalRunCaseUpdateExecutionsPerRound: caseWritesHistogram,
+    });
+    expect(rejections).toEqual({});
+    expect(writesHistogram).toEqual({ '1': rounds });
+    expect(caseWritesHistogram).toEqual({ '1': rounds });
+  });
+});

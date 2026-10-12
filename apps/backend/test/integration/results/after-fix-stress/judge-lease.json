@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-10-12T07:07:19.997Z",
+  "generatedAt": "2026-10-12T07:38:09.238Z",
   "records": [
     {
       "scenario": "J-1a",
@@ -19,7 +19,7 @@
       "totalClaims": 1200,
       "duplicates": 0,
       "missing": 0,
-      "lostRaces": 2129
+      "lostRaces": 2114
     },
     {
       "scenario": "J-3",
